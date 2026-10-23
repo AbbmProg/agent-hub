@@ -18,6 +18,7 @@
     hub watch --exec "команда"    # служба: на каждое новое сообщение для меня — запустить команду (текст — в stdin)
     hub next exp                  # следующий номер общего счётчика (например, номера экспериментов)
     hub counters ; hub whoami ; hub agents
+    hub setup claude --url URL --token ТОКЕН   # подключить проект в текущей папке (codex — то же для Codex)
 """
 import argparse
 import json
@@ -139,6 +140,60 @@ def watch(cmd: str, everything: bool, cooldown: float):
         time.sleep(cooldown)
 
 
+PROTOCOL_START = "<!-- agent-hub:protocol -->"
+PROTOCOL_END = "<!-- /agent-hub:protocol -->"
+HOOK = "hub status; echo; hub history --last 20; echo '--- непрочитанное:'; hub read --peek"
+
+
+def setup(target: str, url: str | None, token: str | None):
+    """Подключить проект в текущей папке: токен — в личные настройки агента, протокол — в его инструкции."""
+    url = (url or os.environ.get("AGENT_HUB_URL") or "").rstrip("/")
+    token = token or os.environ.get("AGENT_HUB_TOKEN")
+    if not url or not token:
+        sys.exit("hub setup: нужны --url и --token (строка из ответа бота при создании агента)")
+    os.environ["AGENT_HUB_URL"], os.environ["AGENT_HUB_TOKEN"] = url, token
+    me = call("GET", "/me")  # проверка: токен рабочий
+    req = urllib.request.Request(url + "/protocol")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        protocol = r.read().decode("utf-8")
+    block = f"{PROTOCOL_START}\n{protocol.strip()}\n{PROTOCOL_END}\n"
+    doc = "CLAUDE.md" if target == "claude" else "AGENTS.md"
+    old = open(doc, encoding="utf-8").read() if os.path.exists(doc) else ""
+    if PROTOCOL_START in old and PROTOCOL_END in old:  # обновить уже вставленный протокол
+        a, rest = old.split(PROTOCOL_START, 1)
+        new = a + block + rest.split(PROTOCOL_END, 1)[1].lstrip("\n")
+    else:
+        new = (old.rstrip() + "\n\n" if old.strip() else "") + block
+    with open(doc, "w", encoding="utf-8") as f:
+        f.write(new)
+    print(f"✓ протокол хаба — в {doc}")
+    if target == "claude":
+        os.makedirs(".claude", exist_ok=True)
+        path = os.path.join(".claude", "settings.local.json")  # личный файл: в git не попадает
+        cfg = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+        cfg.setdefault("env", {}).update({"AGENT_HUB_URL": url, "AGENT_HUB_TOKEN": token})
+        allow = cfg.setdefault("permissions", {}).setdefault("allow", [])
+        if "Bash(hub *)" not in allow:
+            allow.append("Bash(hub *)")
+        starts = cfg.setdefault("hooks", {}).setdefault("SessionStart", [])
+        if not any(h.get("command") == HOOK for e in starts for h in e.get("hooks", [])):
+            starts.append({"hooks": [{"type": "command", "command": HOOK}]})
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        os.chmod(path, 0o600)
+        ignore = open(".gitignore", encoding="utf-8").read() if os.path.exists(".gitignore") else ""
+        if os.path.isdir(".git") and ".claude/settings.local.json" not in ignore:
+            with open(".gitignore", "a", encoding="utf-8") as f:
+                f.write(("" if ignore.endswith("\n") or not ignore else "\n") + ".claude/settings.local.json\n")
+        print(f"✓ токен, разрешение на hub и лента при старте сессии — в {path}")
+        print(f"\nГотово: агент {me['agent']} («{me['title']}»). Запустите в этой папке:  claude")
+        print("и напишите ему: «Подключись к хабу по протоколу и будь на связи».")
+    else:
+        print(f"\nГотово: агент {me['agent']}. Codex не держит команды в фоне — для ответов в любое время "
+              "запустите службу hub watch (README, «Ответы в реальном времени»). Токен Codex берёт из "
+              "AGENT_HUB_URL / AGENT_HUB_TOKEN или ~/.config/agent-hub.json.")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="hub", description="Клиент Agent Hub")
     ap.add_argument("--json", action="store_true", help="вывод в JSON")
@@ -182,6 +237,10 @@ def main(argv=None):
     p.add_argument("text", help='что и как проверено; "-" — со stdin')
     p.add_argument("--ref", action="append", default=[])
     sub.add_parser("status", help="сводка: кто чем занят")
+    p = sub.add_parser("setup", help="подключить проект в текущей папке (claude или codex)")
+    p.add_argument("target", choices=["claude", "codex"])
+    p.add_argument("--url")
+    p.add_argument("--token")
     p = sub.add_parser("busy", help="показать в чате, что агент работает («думает…»)")
     p.add_argument("text", nargs="?", default="думает…")
     p.add_argument("--off", action="store_true", help="убрать статус")
@@ -285,6 +344,9 @@ def main(argv=None):
         if not a.json:
             print(out["text"])
             return
+    elif a.cmd == "setup":
+        setup(a.target, a.url, a.token)
+        return
     elif a.cmd == "busy":
         if a.off:
             call("DELETE", "/busy")

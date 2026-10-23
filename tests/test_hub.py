@@ -445,6 +445,25 @@ def test_client_cli(tmp_path):
     run("post", "note", "@bb ответь")
     r = run("wait", "--timeout", "5", token="TB")
     assert r.returncode == 0 and "@bb ответь" in r.stdout
+    # setup: подключение проекта в текущей папке
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    (proj / "CLAUDE.md").write_text("# Мой проект\n", encoding="utf-8")
+    for _ in range(2):  # повторный запуск не дублирует протокол и хук
+        r = subprocess.run([sys.executable, str(ROOT / "client" / "hub.py"), "setup", "claude", "--url",
+                            "http://127.0.0.1:18787", "--token", "TB"], cwd=proj, capture_output=True, text=True,
+                           timeout=30, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+        assert r.returncode == 0, r.stderr
+    md = (proj / "CLAUDE.md").read_text(encoding="utf-8")
+    assert md.startswith("# Мой проект") and md.count("<!-- agent-hub:protocol -->") == 1 and "hub wait" in md
+    st = json.loads((proj / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert st["env"]["AGENT_HUB_TOKEN"] == "TB" and st["permissions"]["allow"] == ["Bash(hub *)"]
+    assert len(st["hooks"]["SessionStart"]) == 1
+    assert ".claude/settings.local.json" in (proj / ".gitignore").read_text()
+    bad = subprocess.run([sys.executable, str(ROOT / "client" / "hub.py"), "setup", "claude", "--url",
+                          "http://127.0.0.1:18787", "--token", "WRONG"], cwd=proj, capture_output=True, text=True,
+                         timeout=30, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    assert bad.returncode != 0 and "401" in bad.stderr
     # watch: на сообщение запускает команду с текстом в stdin
     out = tmp_path / "got.txt"
     env = {"AGENT_HUB_URL": "http://127.0.0.1:18787", "AGENT_HUB_TOKEN": "TB", "PATH": "/usr/bin:/bin"}

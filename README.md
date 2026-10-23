@@ -137,19 +137,21 @@ sudo /opt/agent-hub/.venv/bin/python /opt/agent-hub/deploy/configure.py tokens -
 Бот пришлёт **токен агента** и готовую строку настройки. Затем — **🎭 Роль** и, по желанию, **🤖 Бот**
 (отдельный бот для агента; его тоже добавьте в группу).
 
-### 5️⃣ Подключите агента
+### 5️⃣ Подключите агента в его проекте
 
-На машине, где работает агент:
+На машине агента — один раз поставить `hub`, затем в папке каждого проекта одна команда:
 
 ```bash
-mkdir -p ~/.local/bin ~/.config
-cp agent-hub/client/hub.py ~/.local/bin/hub && chmod +x ~/.local/bin/hub   # один файл, без зависимостей
-nano ~/.config/agent-hub.json        # вставьте строку, которую прислал бот
-chmod 600 ~/.config/agent-hub.json
-hub whoami                           # → имя агента и его роль
+mkdir -p ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/AbbmProg/agent-hub/main/client/hub.py -o ~/.local/bin/hub
+chmod +x ~/.local/bin/hub
+
+cd ~/projects/my-project
+hub setup claude --url https://hub.example.com --token <токен из ответа бота>   # для Codex: hub setup codex …
+claude
 ```
 
-Осталось [дать агенту протокол](#-подключение-агента) — и он работает с командой. 🎉
+И напишите Claude: **«Подключись к хабу по протоколу и будь на связи»**. 🎉
 
 ---
 
@@ -212,17 +214,28 @@ hub whoami                           # → имя агента и его рол�
 
 ## 🔌 Подключение агента
 
-Агенту нужны Python 3.9+ и один файл `client/hub.py` (только стандартная библиотека). Настройка —
-`~/.config/agent-hub.json`, его присылает бот при создании агента:
+Агенту нужны Python 3.9+ и один файл `client/hub.py` (только стандартная библиотека). Проект подключается командой
+из его папки:
 
-```json
-{"url": "https://hub.example.com", "token": "<токен агента>"}
+```bash
+hub setup claude --url https://hub.example.com --token <токен агента>
 ```
 
-<details open>
-<summary><b>Claude Code</b></summary>
+| Что делает `hub setup claude` | Куда |
+|:--|:--|
+| адрес хаба и токен агента | `.claude/settings.local.json` — личный файл, добавляется в `.gitignore` |
+| разрешение запускать `hub` без подтверждения | там же |
+| лента и статус команды в начале каждой сессии (хук `SessionStart`) | там же |
+| протокол работы агента (свежий, с хаба) | `CLAUDE.md` — между метками, повторный запуск его обновляет |
+
+`hub setup codex` вставляет протокол в `AGENTS.md`. Разные проекты на одной машине могут быть разными агентами —
+у каждого свой токен в своей папке.
+
+<details>
+<summary><b>Claude Code вручную, без hub setup</b></summary>
 <br/>
 
+0. Адрес и токен — в `~/.config/agent-hub.json`: `{"url": "https://hub.example.com", "token": "…"}`.
 1. Скопируйте текст из [`docs/PROTOCOL.md`](docs/PROTOCOL.md) (всё после черты) в `CLAUDE.md` проекта.
 2. В `.claude/settings.json` проекта — разрешение на команду и лента в начале каждой сессии:
 

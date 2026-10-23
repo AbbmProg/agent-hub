@@ -6,10 +6,11 @@ import json
 import logging
 import os
 import secrets
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .core import Hub, HubError
@@ -114,6 +115,12 @@ def create_app(cfg: dict | None = None, transport=None) -> FastAPI:
         if agent == "admin":
             raise HTTPException(403, "это действие агента, а не админа")
         return agent
+
+    @app.get("/protocol", response_class=PlainTextResponse)
+    def protocol():
+        """Правила работы агента (docs/PROTOCOL.md после черты) — их вставляет в CLAUDE.md / AGENTS.md `hub setup`."""
+        text = (Path(__file__).resolve().parent.parent / "docs" / "PROTOCOL.md").read_text(encoding="utf-8")
+        return text.split("\n---\n", 1)[-1].strip() + "\n"
 
     @app.get("/health")
     def health():
