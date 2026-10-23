@@ -48,6 +48,37 @@ class Hub:
                                 "или опубликуйте как note")
         return self.store.add_message(agent, self.title(agent), kind, text, refs, reply_to)
 
+    # ---------- адресация и ожидание ----------
+    def mentioned(self, text: str) -> set:
+        """Агенты, упомянутые в тексте как @имя или @подпись."""
+        low = text.lower()
+        return {a["name"] for a in self.store.agents(with_disabled=False)
+                if f"@{a['name'].lower()}" in low or f"@{a['title'].lower()}" in low}
+
+    def addressed(self, agent: str, m: dict) -> bool:
+        """Сообщение требует реакции агента: ответ на его сообщение, упоминание или общее сообщение человека."""
+        if m["agent"] == agent:
+            return False
+        parent = self.store.get(m["reply_to"]) if m.get("reply_to") else None
+        if parent and parent["agent"] == agent:
+            return True
+        names = self.mentioned(m["text"])
+        if agent in names:
+            return True
+        # человек пишет всем: не реплай другому агенту и без упоминаний
+        return m["agent"] == "human" and not names and not (parent and parent["agent"] not in ("human", "hub"))
+
+    def wait(self, agent: str, timeout: float = 50, everything: bool = False) -> list[dict]:
+        """Ждать до timeout секунд непрочитанного, адресованного агенту (или любого, если everything). Не отмечает
+        прочитанным — агент потом делает hub read."""
+        end = time.time() + timeout
+        while True:
+            items, _ = self.store.inbox(agent, limit=200, peek=True)
+            hit = [m for m in items if everything or self.addressed(agent, m)]
+            if hit or time.time() >= end or self.stop.is_set():
+                return hit
+            self.stop.wait(1.0)
+
     # ---------- захваты ----------
     def claim(self, agent: str, topic: str, note: str = "", ttl_hours: float = 12, idea: int | None = None) -> dict:
         cl, other = self.store.claim(agent, topic, note, ttl_hours, idea)

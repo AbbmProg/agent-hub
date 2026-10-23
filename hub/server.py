@@ -148,6 +148,13 @@ def create_app(cfg: dict | None = None, transport=None) -> FastAPI:
         items, more = st["store"].inbox(agent, limit, peek)
         return {"messages": items, "more": more}
 
+    @app.get("/inbox/wait")
+    def inbox_wait(timeout: float = Query(50, ge=0, le=55), all_: bool = Query(False, alias="all"),
+                   agent: str = Depends(agent_only)):
+        """Длинный опрос: вернуть, как только появится непрочитанное для агента (адресованное ему или, с all, любое)."""
+        msgs = st["hub"].wait(agent, timeout, all_)
+        return {"messages": msgs, "timeout": not msgs}
+
     @app.get("/status")
     def status(_: str = Depends(who)):
         return {"text": st["hub"].status_text()}

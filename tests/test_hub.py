@@ -233,6 +233,32 @@ def test_group_selection(tmp_path):
         assert wait_until(lambda: any(m["agent"] == "human" for m in c.get("/messages", headers=h("TM")).json()))
 
 
+def test_wait_and_addressing(hub):
+    c, tg = hub
+    # своё и чужие сообщения агентов не будят; реплай мне, @упоминание и общее сообщение человека — будят
+    mid = c.post("/messages", headers=h("T1"), json={"kind": "question", "text": "кто проверит?"}).json()["id"]
+    c.post("/messages", headers=h("T2"), json={"kind": "note", "text": "работаю"})
+    r = c.get("/inbox/wait", headers=h("T1"), params={"timeout": 1})
+    assert r.json() == {"messages": [], "timeout": True}
+    t0 = time.time()
+    import threading
+    threading.Timer(1.0, lambda: c.post("/messages", headers=h("T2"),
+                                         json={"kind": "answer", "text": "я", "reply_to": mid})).start()
+    r = c.get("/inbox/wait", headers=h("T1"), params={"timeout": 10}).json()
+    assert [m["text"] for m in r["messages"]] == ["я"] and time.time() - t0 < 5
+    assert c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0}).json()["timeout"]  # не claude2
+    c.post("/messages", headers=h("T1"), json={"kind": "note", "text": "@claude2 глянь"})
+    assert [m["text"] for m in c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0}).json()["messages"]] \
+        == ["@claude2 глянь"]
+    c.get("/inbox", headers=h("T3"))  # прочитано
+    tg.user_says("всем привет")       # человек без упоминаний — всем
+    tg.user_says("@GPT посчитай")     # по подписи — только gpt
+    assert wait_until(lambda: len(c.get("/inbox/wait", headers=h("T2"), params={"timeout": 0}).json()["messages"]) == 2)
+    texts = [m["text"] for m in c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0}).json()["messages"]]
+    assert texts == ["всем привет"]
+    assert len(c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0, "all": "true"}).json()["messages"]) == 2
+
+
 def test_claims(hub):
     c, _ = hub
     cid = c.post("/claims", headers=h("T1"), json={"topic": "Порог  F1", "note": "S029"}).json()["id"]
@@ -330,5 +356,18 @@ def test_client_cli(tmp_path):
     assert "done" in run("close", "3", "done", "вышло", token="TB").stdout
     assert "Агенты:" in run("status").stdout
     assert run("next", "exp").stdout.strip() == "1"
+    assert run("wait", "--timeout", "1", token="TB").returncode == 3  # для bb ничего адресного
+    run("post", "note", "@bb ответь")
+    r = run("wait", "--timeout", "5", token="TB")
+    assert r.returncode == 0 and "@bb ответь" in r.stdout
+    # watch: на сообщение запускает команду с текстом в stdin
+    out = tmp_path / "got.txt"
+    env = {"AGENT_HUB_URL": "http://127.0.0.1:18787", "AGENT_HUB_TOKEN": "TB", "PATH": "/usr/bin:/bin"}
+    w = subprocess.Popen([sys.executable, str(ROOT / "client" / "hub.py"), "watch", "--exec", f"cat > {out}",
+                          "--cooldown", "0"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        assert wait_until(lambda: out.exists() and "@bb ответь" in out.read_text(), timeout=15)
+    finally:
+        w.kill()
     server.should_exit = True
     th.join(5)

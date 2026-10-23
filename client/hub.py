@@ -13,6 +13,8 @@
     hub ideas [--all]             # очередь идей; hub take <id> — взять чужую идею; hub close <id> done|dropped "итог"
     hub reviews                   # чужие отчёты, ждущие проверки; hub review <id> confirm|refute "что проверил" --ref ...
     hub status                    # кто чем занят, свободные идеи, что ждёт проверки
+    hub wait [--timeout 600]      # ждать сообщения для меня (реплай мне, @упоминание, общее от человека); --all — любое
+    hub watch --exec "команда"    # служба: на каждое новое сообщение для меня — запустить команду (текст — в stdin)
     hub next exp                  # следующий номер общего счётчика (например, номера экспериментов)
     hub counters ; hub whoami ; hub agents
 """
@@ -46,7 +48,7 @@ def config() -> tuple[str, str]:
     return url.rstrip("/"), token
 
 
-def call(method: str, path: str, body=None, **params):
+def call(method: str, path: str, body=None, http_timeout: float = 30, **params):
     url, token = config()
     q = {k: v for k, v in params.items() if v is not None}
     full = url + path + ("?" + urllib.parse.urlencode(q) if q else "")
@@ -54,7 +56,7 @@ def call(method: str, path: str, body=None, **params):
     req = urllib.request.Request(full, data=data, method=method,
                                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=http_timeout) as r:
             return json.loads(r.read() or b"null")
     except urllib.error.HTTPError as e:
         try:
@@ -81,6 +83,44 @@ def show(m: dict, full: bool = True):
     print("   " + text.replace("\n", "\n   "))
     for r in m.get("refs") or []:
         print(f"   ref: {r}")
+
+
+def wait_for(timeout: float, everything: bool) -> list:
+    """Длинный опрос хаба кусками по 50 с; сетевые сбои — переждать и продолжить."""
+    end = time.time() + timeout if timeout else None
+    while True:
+        left = 50 if end is None else max(0.0, min(50.0, end - time.time()))
+        try:
+            r = call("GET", "/inbox/wait", http_timeout=left + 20, timeout=left, all=str(everything).lower())
+        except SystemExit as e:
+            if "недоступен" not in str(e):
+                raise
+            print(e, file=sys.stderr)
+            time.sleep(10)
+            continue
+        if r["messages"] or (end is not None and time.time() >= end):
+            return r["messages"]
+
+
+def watch(cmd: str, everything: bool, cooldown: float):
+    """Служба на машине агента: пришло сообщение для агента -> пометить прочитанным и запустить команду с его текстом."""
+    import subprocess
+    print(f"hub watch: жду сообщений, команда: {cmd}", flush=True)
+    while True:
+        wait_for(0, everything)
+        msgs = call("GET", "/inbox")["messages"]
+        if not msgs:
+            continue
+        text = "\n\n".join(f"#{m['id']} {m['author']} [{m['kind']}]"
+                            + (f" (ответ на #{m['reply_to']})" if m.get("reply_to") else "") + f":\n{m['text']}"
+                            for m in msgs)
+        print(f"hub watch: {len(msgs)} новых — запускаю команду", flush=True)
+        try:
+            subprocess.run(cmd, shell=True, input=text, text=True, env={**os.environ, "HUB_MESSAGES": text},
+                           timeout=3600)
+        except subprocess.TimeoutExpired:
+            print("hub watch: команда работала дольше часа — прервана", file=sys.stderr, flush=True)
+        time.sleep(cooldown)
 
 
 def main(argv=None):
@@ -126,6 +166,13 @@ def main(argv=None):
     p.add_argument("text", help='что и как проверено; "-" — со stdin')
     p.add_argument("--ref", action="append", default=[])
     sub.add_parser("status", help="сводка: кто чем занят")
+    p = sub.add_parser("wait", help="ждать сообщения для меня (код выхода 3 — истекло время)")
+    p.add_argument("--timeout", type=float, default=0, help="секунд; 0 — ждать сколько угодно")
+    p.add_argument("--all", action="store_true", help="любое новое сообщение, а не только адресованное мне")
+    p = sub.add_parser("watch", help="на каждое сообщение для меня запускать команду")
+    p.add_argument("--exec", dest="exec_cmd", required=True, help="команда; текст сообщений — в stdin и HUB_MESSAGES")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--cooldown", type=float, default=5, help="пауза после запуска команды, с")
     p = sub.add_parser("next", help="следующее значение общего счётчика")
     p.add_argument("name")
     sub.add_parser("counters")
@@ -218,6 +265,17 @@ def main(argv=None):
         if not a.json:
             print(out["text"])
             return
+    elif a.cmd == "wait":
+        msgs = wait_for(a.timeout, a.all)
+        if a.json:
+            print(json.dumps(msgs, ensure_ascii=False, indent=1))
+        else:
+            for m in msgs:
+                show(m)
+        sys.exit(0 if msgs else 3)
+    elif a.cmd == "watch":
+        watch(a.exec_cmd, a.all, a.cooldown)
+        return
     elif a.cmd == "next":
         out = call("POST", f"/counters/{urllib.parse.quote(a.name, safe='')}/next")
         if not a.json:
