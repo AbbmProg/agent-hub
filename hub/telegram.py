@@ -10,6 +10,7 @@
 """
 import json
 import logging
+import re
 import threading
 import time
 
@@ -19,6 +20,12 @@ from .core import Hub
 from .tgadmin import GROUP_KB, AdminUI
 
 log = logging.getLogger("agent-hub.telegram")
+TOKEN_RE = re.compile(r"\d{6,}:[\w-]{30,}")
+
+
+def redact(e) -> str:
+    """Текст ошибки без токенов ботов (они бывают в адресе запроса)."""
+    return TOKEN_RE.sub("<token>", repr(e))
 
 KIND_LABEL = {
     "report": ("📊", "отчёт"), "finding": ("🔎", "находка"), "idea": ("💡", "идея"), "question": ("❓", "вопрос"),
@@ -166,7 +173,7 @@ class Telegram:
                         backoff = min(backoff * 2, 60)
                     break
                 except (httpx.HTTPError, ValueError) as e:  # сеть: сообщение остаётся в очереди
-                    log.warning("Telegram недоступен (%r), повтор через %.0f с", e, backoff)
+                    log.warning("Telegram недоступен (%s), повтор через %.0f с", redact(e), backoff)
                     self.stop.wait(backoff)
                     backoff = min(backoff * 2, 60)
                     break
@@ -240,7 +247,7 @@ class Telegram:
                 self.stop.wait(e.retry_after or backoff)
                 backoff = min(backoff * 2, 60)
             except (httpx.HTTPError, ValueError) as e:
-                log.warning("getUpdates: Telegram недоступен (%r)", e)
+                log.warning("getUpdates: Telegram недоступен (%s)", redact(e))
                 self.stop.wait(backoff)
                 backoff = min(backoff * 2, 60)
 

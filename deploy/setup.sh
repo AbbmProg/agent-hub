@@ -39,9 +39,10 @@ CONF="$ETC/config.json"
 
 echo "== пакеты"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq python3 python3-venv python3-pip curl ca-certificates >/dev/null
-[[ -n "$DOMAIN" ]] && apt-get install -y -qq caddy >/dev/null
+APT=(apt-get -o DPkg::Lock::Timeout=900)   # на свежем сервере apt часто занят автообновлением — ждём, а не падаем
+"${APT[@]}" update -qq
+"${APT[@]}" install -y -qq python3 python3-venv python3-pip curl ca-certificates >/dev/null
+[[ -n "$DOMAIN" ]] && "${APT[@]}" install -y -qq caddy >/dev/null
 
 echo "== пользователь и каталоги"
 id -u "$USER_NAME" >/dev/null 2>&1 || useradd --system --home "$DATA" --shell /usr/sbin/nologin "$USER_NAME"

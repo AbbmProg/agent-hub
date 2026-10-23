@@ -17,6 +17,8 @@ from .store import Store
 from .telegram import Telegram
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+for noisy in ("httpx", "httpcore"):  # httpx пишет адрес запроса, а в нём токен бота — в журнал не пускаем
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def load_config(path: str | None = None) -> dict:
