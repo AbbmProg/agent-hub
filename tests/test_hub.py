@@ -210,6 +210,29 @@ def test_buttons(hub):
     assert c.get("/me", headers=h("T1")).status_code == 200
 
 
+def test_group_selection(tmp_path):
+    """Группа не задана при установке: бота добавили в группу -> админ выбирает её кнопкой."""
+    cfg = {"db": str(tmp_path / "g.db"), "admin_token": "ADM", "admin_code": "c0de", "digest_hour": None,
+           "agents": {"main": {"title": "Хаб", "api_token": "TM", "bot_token": "BM"}}}
+    tg = FakeTelegram()
+    with TestClient(create_app(cfg, transport=httpx.MockTransport(tg))) as c:
+        c.post("/messages", headers=h("TM"), json={"kind": "note", "text": "до группы"})
+        tg.uid += 1
+        tg.updates.append({"update_id": tg.uid, "my_chat_member": {"chat": {"id": -555, "type": "supergroup",
+                                                                             "title": "Команда"}}})
+        tg.user_says("/admin c0de", chat=ADMIN_UID, uid=ADMIN_UID)
+        assert wait_until(lambda: any("Группа не выбрана" in t for t in tg.replies_to(ADMIN_UID)))
+        tg.press("m:group")
+        assert wait_until(lambda: "grp:-555" in tg.buttons(ADMIN_UID))
+        tg.press("grp:-555")
+        assert wait_until(lambda: any("подключён к этой группе" in t for t in tg.replies_to(-555)))
+        c.post("/messages", headers=h("TM"), json={"kind": "note", "text": "после группы"})
+        assert wait_until(lambda: any("после группы" in t for t in tg.replies_to(-555)))
+        assert not any("до группы" in t for t in tg.replies_to(-555))  # до выбора группы — только в ленте
+        tg.user_says("люди пишут", chat=-555, uid=9)
+        assert wait_until(lambda: any(m["agent"] == "human" for m in c.get("/messages", headers=h("TM")).json()))
+
+
 def test_claims(hub):
     c, _ = hub
     cid = c.post("/claims", headers=h("T1"), json={"topic": "Порог  F1", "note": "S029"}).json()["id"]

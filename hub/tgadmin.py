@@ -27,7 +27,8 @@ def kb(*rows) -> dict:
 
 MAIN_KB = kb([("👥 Агенты", "m:agents"), ("➕ Добавить агента", "m:add")],
              [("📊 Статус", "m:status"), ("💡 Идеи", "m:ideas")],
-             [("📰 Сводка за сутки", "m:digest"), ("🔢 Счётчики", "m:counters")])
+             [("📰 Сводка за сутки", "m:digest"), ("🔢 Счётчики", "m:counters")],
+             [("💬 Группа", "m:group")])
 GROUP_KB = kb([("📊 Статус", "g:status"), ("💡 Идеи", "g:ideas"), ("📰 Сводка", "g:digest")])
 BACK = [("« Меню", "m:main")]
 
@@ -56,7 +57,19 @@ class AdminUI:
     # ---------- экраны ----------
     def screen_main(self):
         n = len(self.store.agents(with_disabled=False))
-        return f"Хаб агентов: активных агентов {n}. Что делаем?", MAIN_KB
+        warn = "" if self.tg.chat_id else "\n\n⚠️ Группа не выбрана: добавьте бота в группу и нажмите «💬 Группа»."
+        return f"Хаб агентов: активных агентов {n}. Что делаем?{warn}", MAIN_KB
+
+    def screen_group(self):
+        cur, seen = self.tg.chat_id, self.tg.seen_groups()
+        text = (f"Группа хаба: {cur}" if cur else "Группа хаба не выбрана.") + "\n\n"
+        if seen:
+            text += "Бот видел эти группы — выберите, где будет работать хаб:"
+        else:
+            text += ("Добавьте бота в группу (лучше администратором) и напишите там любое сообщение, "
+                     "затем нажмите «Обновить».")
+        rows = [[(f"💬 {title or gid}", f"grp:{gid}")] for gid, title in seen.items()]
+        return text, kb(*rows, [("🔄 Обновить", "m:group")], BACK)
 
     def screen_agents(self):
         act, now = self.store.last_activity(), time.time()
@@ -143,13 +156,19 @@ class AdminUI:
         self.pending.pop(uid, None)
         kind, _, rest = data.partition(":")
         if kind == "m":
-            if rest in ("main", "agents", "counters"):
+            if rest in ("main", "agents", "counters", "group"):
                 return self.edit(chat, mid, *getattr(self, f"screen_{rest}")())
             if rest in ("status", "ideas", "digest"):
                 return self.edit(chat, mid, self.info_screen(rest), kb(BACK))
             if rest in ("add", "counter"):
                 self.pending[uid] = (rest, None)
                 return self.send(chat, ASK[rest] + "\n\n/cancel — отмена")
+        if kind == "grp":
+            gid = int(rest)
+            title = self.tg.seen_groups().get(gid, "")
+            self.tg.set_chat(gid)
+            self.send(gid, "Хаб агентов подключён к этой группе. /menu — кнопки, /status — кто чем занят.", GROUP_KB)
+            return self.edit(chat, mid, f"Готово: хаб работает в группе «{title or gid}».", kb(BACK))
         if kind == "a":
             name, _, act = rest.partition(":")
             if not act:

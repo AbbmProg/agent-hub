@@ -191,6 +191,10 @@ class Store:
     def pending_tg(self, limit=20) -> list[dict]:
         return [_msg(r) for r in self.q("SELECT * FROM messages WHERE tg_state = 'pending' ORDER BY id LIMIT ?", limit)]
 
+    def skip_pending_tg(self):
+        with self.lock:
+            self.db.execute("UPDATE messages SET tg_state = 'skip' WHERE tg_state = 'pending'")
+
     def set_tg(self, mid: int, state: str, tg_msg=None):
         with self.lock:
             self.db.execute("UPDATE messages SET tg_state = ?, tg_msg = COALESCE(?, tg_msg) WHERE id = ?",

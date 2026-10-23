@@ -8,6 +8,7 @@
 Боты не получают историю чата — только новые сообщения (недоставленные Telegram хранит ~24 ч). Поэтому память —
 лента хаба, а Telegram — витрина и канал для людей.
 """
+import json
 import logging
 import threading
 import time
@@ -57,12 +58,40 @@ def split(text: str, n: int = LIMIT) -> list[str]:
 class Telegram:
     def __init__(self, cfg: dict, hub: Hub, transport: httpx.BaseTransport | None = None):
         self.cfg, self.hub, self.store = cfg, hub, hub.store
-        self.chat_id = cfg.get("chat_id")
+        self.cfg_chat_id = cfg.get("chat_id")
         self.http = httpx.Client(timeout=httpx.Timeout(40.0, connect=15.0), proxy=cfg.get("tg_proxy") or None,
                                  transport=transport)
         self.base = (cfg.get("tg_api") or "https://api.telegram.org").rstrip("/")
         self.stop = threading.Event()
         self.admin = AdminUI(self)
+
+    # ---------- группа ----------
+    @property
+    def chat_id(self) -> int | None:
+        """Группа хаба: выбранная админом кнопкой (хранится в базе) или из конфига установки."""
+        v = self.store.kv_get("chat_id")
+        return int(v) if v else self.cfg_chat_id
+
+    def set_chat(self, chat_id: int):
+        """Выбрать группу; накопленное до выбора остаётся только в ленте (в чат не вываливаем старое)."""
+        if not self.chat_id:
+            self.store.skip_pending_tg()
+        self.store.kv_set("chat_id", chat_id)
+
+    def seen_groups(self) -> dict:
+        try:
+            return {int(k): v for k, v in json.loads(self.store.kv_get("seen_groups", "{}")).items()}
+        except ValueError:
+            return {}
+
+    def remember_group(self, chat: dict):
+        """Группы, куда добавили бота или где он видел сообщения, — кандидаты для выбора в меню «Группа»."""
+        if chat.get("type") not in ("group", "supergroup") or chat.get("id") == self.chat_id:
+            return
+        seen = self.seen_groups()
+        if seen.get(chat["id"]) != chat.get("title", ""):
+            seen[chat["id"]] = chat.get("title", "")
+            self.store.kv_set("seen_groups", json.dumps(seen, ensure_ascii=False))
 
     # ---------- боты ----------
     def listener_token(self) -> str | None:
@@ -146,12 +175,15 @@ class Telegram:
     def poll_once(self, token: str, timeout: int = 25) -> int:
         offset = int(self.store.kv_get("tg_offset", 0))
         ups = self.call(token, "getUpdates", offset=offset, timeout=timeout,
-                        allowed_updates=["message", "callback_query"])
+                        allowed_updates=["message", "callback_query", "my_chat_member"])
         for up in ups:
             self.store.kv_set("tg_offset", up["update_id"] + 1)
             try:
                 if up.get("callback_query"):
                     self.admin.handle_callback(up["callback_query"])
+                    continue
+                if up.get("my_chat_member"):  # бота добавили в группу / изменили права
+                    self.remember_group(up["my_chat_member"].get("chat") or {})
                     continue
                 m = up.get("message") or {}
                 u = m.get("from") or {}
@@ -169,6 +201,7 @@ class Telegram:
         if chat.get("type") == "private":
             return self.admin.handle_message(m, u, text)
         if chat.get("id") != self.chat_id:
+            self.remember_group(chat)
             return
         if text.startswith("/"):
             cmd = text.split()[0].split("@")[0].lower()
@@ -213,7 +246,7 @@ class Telegram:
 
     def start(self):
         if not self.chat_id:
-            log.warning("Telegram-группа не задана (chat_id): лента работает, чат и команды — нет")
+            log.warning("Telegram-группа не выбрана: добавьте бота в группу и выберите её в меню «Группа»")
         for target in (self.sender_loop, self.poller_loop):
             threading.Thread(target=target, daemon=True, name=target.__name__).start()
 
