@@ -93,8 +93,8 @@ def wait_for(timeout: float, everything: bool) -> list:
         left = 50 if end is None else max(0.0, min(50.0, end - time.time()))
         try:
             r = call("GET", "/inbox/wait", http_timeout=left + 20, timeout=left, all=str(everything).lower())
-        except SystemExit as e:
-            if "недоступен" not in str(e):
+        except SystemExit as e:  # хаб перезапускается (502/503/504) или сеть моргнула — переждать
+            if not any(x in str(e) for x in ("недоступен", ": 502", ": 503", ": 504")):
                 raise
             print(e, file=sys.stderr)
             time.sleep(10)
