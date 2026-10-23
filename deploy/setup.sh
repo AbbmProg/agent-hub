@@ -5,13 +5,16 @@
 #        [--agent claude1:"Claude #1"] [--agent gpt:"GPT"] [--agent claude2:"Claude #2"]
 #        [--bot claude1=123:ABC] [--bot gpt=456:DEF] [--bot claude2=789:GHI]
 #        [--chat-id -1001234567890] [--listener claude1] [--tg-proxy socks5://127.0.0.1:1080]
+#        [--digest-hour 18] [--admin-tg <telegram user id>]
+#
+# Агентов можно не задавать здесь: после установки их добавляет админ в личке бота (/add, /bot, /role).
 #
 # Без --domain хаб слушает http://<IP>:<port> (токены идут открытым текстом — только для доверенной сети / VPN).
 # С --domain: Caddy с автоматическим HTTPS (порты 80 и 443 должны быть открыты, DNS домена — на этот сервер).
 set -euo pipefail
 
-DOMAIN="" EMAIL="" PORT=8787 CHAT_ID="" LISTENER="" TG_PROXY="__keep__"
-AGENTS=() BOTS=()
+DOMAIN="" EMAIL="" PORT=8787 CHAT_ID="" LISTENER="" TG_PROXY="__keep__" DIGEST=""
+AGENTS=() BOTS=() ADMINS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="$2"; shift 2 ;;
@@ -22,7 +25,9 @@ while [[ $# -gt 0 ]]; do
     --chat-id) CHAT_ID="$2"; shift 2 ;;
     --listener) LISTENER="$2"; shift 2 ;;
     --tg-proxy) TG_PROXY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --digest-hour) DIGEST="$2"; shift 2 ;;
+    --admin-tg) ADMINS+=("$2"); shift 2 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "неизвестный параметр: $1" >&2; exit 1 ;;
   esac
 done
@@ -52,8 +57,12 @@ echo "== Python-окружение"
 "$APP/.venv/bin/pip" install -q --upgrade pip
 "$APP/.venv/bin/pip" install -q -r "$APP/requirements.txt"
 
+if [[ -n "$DOMAIN" ]]; then URL="https://$DOMAIN"; else URL="http://$(hostname -I | awk '{print $1}'):$PORT"; fi
+
 echo "== конфиг"
-ARGS=(init --config "$CONF" --db "$DATA/hub.db")
+ARGS=(init --config "$CONF" --db "$DATA/hub.db" --public-url "$URL")
+[[ -n "$DIGEST" ]] && ARGS+=(--digest-hour "$DIGEST")
+for t in "${ADMINS[@]}"; do ARGS+=(--admin-tg "$t"); done
 for a in "${AGENTS[@]}"; do ARGS+=(--agent "$a"); done
 for b in "${BOTS[@]}"; do ARGS+=(--bot "$b"); done
 [[ -n "$CHAT_ID" ]] && ARGS+=(--chat-id "$CHAT_ID")
@@ -110,11 +119,8 @@ if [[ -n "$DOMAIN" ]]; then
   systemctl enable -q caddy
   systemctl reload caddy 2>/dev/null || systemctl restart caddy
   if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; fi
-  URL="https://$DOMAIN"
 else
   if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow "$PORT/tcp" >/dev/null; fi
-  IP=$(hostname -I | awk '{print $1}')
-  URL="http://$IP:$PORT"
 fi
 
 echo "== проверка"
@@ -126,9 +132,10 @@ curl -sf "http://127.0.0.1:$PORT/health" && echo || { echo "!!! хаб не от
 
 echo
 echo "Хаб: $URL"
-echo "Токены (выдать каждому агенту свой; админ — только вам):"
 "$APP/.venv/bin/python" "$APP/deploy/configure.py" tokens --config "$CONF" | sed 's/^/   /'
+CODE=$("$APP/.venv/bin/python" -c "import json;print(json.load(open('$CONF'))['admin_code'])")
 echo
+echo "Управление из Telegram: напишите боту-слушателю в личку  /admin $CODE  — дальше /add, /bot, /role, /help."
 echo "Подключение агента:  AGENT_HUB_URL=$URL AGENT_HUB_TOKEN=<токен агента> python3 client/hub.py whoami"
 [[ -z "$DOMAIN" ]] && echo "Внимание: без --domain трафик идёт по HTTP — используйте только в доверенной сети."
 exit 0

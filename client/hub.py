@@ -10,6 +10,9 @@
     hub post report "текст" --ref "commit abc123" --ref "run daily-0423"   # текст "-" — со stdin
     hub post idea "..." ; hub post finding "..." ; hub post question "..." ; hub post answer "..." --reply 42
     hub claim "тема" --note "..." [--ttl 12]  ;  hub release <id|тема>  ;  hub claims
+    hub ideas [--all]             # очередь идей; hub take <id> — взять чужую идею; hub close <id> done|dropped "итог"
+    hub reviews                   # чужие отчёты, ждущие проверки; hub review <id> confirm|refute "что проверил" --ref ...
+    hub status                    # кто чем занят, свободные идеи, что ждёт проверки
     hub next exp                  # следующий номер общего счётчика (например, номера экспериментов)
     hub counters ; hub whoami ; hub agents
 """
@@ -100,6 +103,23 @@ def main(argv=None):
     p = sub.add_parser("release", help="освободить тему")
     p.add_argument("key", help="id захвата или тема")
     sub.add_parser("claims", help="активные захваты")
+    p = sub.add_parser("ideas", help="очередь идей")
+    p.add_argument("--all", action="store_true", help="включая взятые и закрытые")
+    p = sub.add_parser("take", help="взять идею в работу")
+    p.add_argument("id", type=int)
+    p.add_argument("--note", default="")
+    p.add_argument("--ttl", type=float, default=12)
+    p = sub.add_parser("close", help="закрыть идею")
+    p.add_argument("id", type=int)
+    p.add_argument("outcome", choices=["done", "dropped"])
+    p.add_argument("text", nargs="?", default="")
+    sub.add_parser("reviews", help="чужие отчёты, ждущие проверки")
+    p = sub.add_parser("review", help="проверить чужой отчёт")
+    p.add_argument("id", type=int)
+    p.add_argument("verdict", choices=["confirm", "refute"])
+    p.add_argument("text", help='что и как проверено; "-" — со stdin')
+    p.add_argument("--ref", action="append", default=[])
+    sub.add_parser("status", help="сводка: кто чем занят")
     p = sub.add_parser("next", help="следующее значение общего счётчика")
     p.add_argument("name")
     sub.add_parser("counters")
@@ -152,6 +172,46 @@ def main(argv=None):
             if not out:
                 print("(захватов нет)")
             return
+    elif a.cmd == "ideas":
+        out = call("GET", "/ideas", status="all" if a.all else "open")
+        if not a.json:
+            for m in out:
+                tag = "" if m["status"] == "open" else f" [{m['status']}{' — ' + m['owner'] if m.get('owner') else ''}]"
+                show(m, full=False)
+                if tag:
+                    print("  " + tag)
+            if not out:
+                print("(свободных идей нет)")
+            return
+    elif a.cmd == "take":
+        out = call("POST", f"/ideas/{a.id}/take", {"note": a.note, "ttl_hours": a.ttl})
+        if not a.json:
+            print(f"идея #{a.id} взята (захват #{out['id']}); по итогу: hub report ... и hub close {a.id} done|dropped")
+            return
+    elif a.cmd == "close":
+        out = call("POST", f"/ideas/{a.id}/close", {"outcome": a.outcome, "text": a.text})
+        if not a.json:
+            print(f"идея #{a.id}: {out['status']}")
+            return
+    elif a.cmd == "reviews":
+        out = call("GET", "/reviews/pending")
+        if not a.json:
+            for m in out:
+                show(m)
+            if not out:
+                print("(чужих непроверенных отчётов нет)")
+            return
+    elif a.cmd == "review":
+        text = sys.stdin.read() if a.text == "-" else a.text
+        out = call("POST", f"/reports/{a.id}/review", {"verdict": a.verdict, "text": text.strip(), "refs": a.ref})
+        if not a.json:
+            print(f"отчёт #{a.id}: {out['status']}")
+            return
+    elif a.cmd == "status":
+        out = call("GET", "/status")
+        if not a.json:
+            print(out["text"])
+            return
     elif a.cmd == "next":
         out = call("POST", f"/counters/{urllib.parse.quote(a.name, safe='')}/next")
         if not a.json:
@@ -161,6 +221,9 @@ def main(argv=None):
         out = call("GET", "/counters")
     elif a.cmd == "whoami":
         out = call("GET", "/me")
+        if not a.json:
+            print(f"{out['agent']} — «{out['title']}»" + (f"\nроль: {out['role']}" if out.get("role") else ""))
+            return
     elif a.cmd == "agents":
         out = call("GET", "/agents")
     print(json.dumps(out, ensure_ascii=False, indent=1))

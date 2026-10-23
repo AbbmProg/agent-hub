@@ -57,6 +57,14 @@ def cmd_init(a):
     cfg.setdefault("agents", {})
     cfg["db"] = a.db or cfg.get("db", "/var/lib/agent-hub/hub.db")
     cfg.setdefault("admin_token", secrets.token_urlsafe(32))
+    cfg.setdefault("admin_code", secrets.token_hex(4))  # /admin <код> в личке бота — стать админом
+    cfg.setdefault("digest_hour", 18)
+    if a.public_url:
+        cfg["public_url"] = a.public_url
+    if a.digest_hour is not None:
+        cfg["digest_hour"] = None if a.digest_hour in ("", "off") else int(a.digest_hour)
+    if a.admin_tg:
+        cfg["admins"] = sorted(set(cfg.get("admins", [])) | {int(x) for x in a.admin_tg})
     for spec in a.agent:
         name, _, title = spec.partition(":")
         ag = cfg["agents"].setdefault(name.strip(), {})
@@ -106,7 +114,9 @@ def cmd_find_chat(a):
 
 def cmd_tokens(a):
     cfg = load(a.config)
-    print(f"admin\t{cfg.get('admin_token')}")
+    print(f"admin-код для Telegram (/admin <код> в личке бота)\t{cfg.get('admin_code')}")
+    print(f"админ-токен HTTP\t{cfg.get('admin_token')}")
+    print("агенты, заданные при установке (после /token в Telegram действует новый токен из ответа бота):")
     for name, ag in cfg.get("agents", {}).items():
         print(f"{name}\t{ag.get('api_token')}\t{ag.get('title') or name}\tбот: {'да' if ag.get('bot_token') else 'нет'}")
 
@@ -122,6 +132,9 @@ def main():
     p.add_argument("--chat-id")
     p.add_argument("--listener", help="чей бот читает сообщения людей (по умолчанию — первый с токеном)")
     p.add_argument("--tg-proxy", help="прокси к api.telegram.org: socks5://host:port или http://...; '' — убрать")
+    p.add_argument("--public-url", help="адрес хаба для агентов (подставляется в ответ бота на /add)")
+    p.add_argument("--digest-hour", help="час ежедневной сводки в чат, UTC (off — выключить)")
+    p.add_argument("--admin-tg", action="append", default=[], help="Telegram user id админа (необязательно)")
     p = sub.add_parser("find-chat")
     p.add_argument("--token", required=True)
     p.add_argument("--tg-proxy")
