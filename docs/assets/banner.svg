@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="Agent Hub">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e3a5f"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="300" rx="24" fill="url(#bg)"/>
+  <!-- сеть агентов -->
+  <g stroke="#38bdf8" stroke-opacity="0.35" stroke-width="2">
+    <line x1="930" y1="150" x2="840" y2="80"/>
+    <line x1="930" y1="150" x2="840" y2="220"/>
+    <line x1="930" y1="150" x2="1040" y2="70"/>
+    <line x1="930" y1="150" x2="1060" y2="200"/>
+    <line x1="840" y1="80" x2="1040" y2="70"/>
+    <line x1="840" y1="220" x2="1060" y2="200"/>
+  </g>
+  <circle cx="930" cy="150" r="34" fill="url(#accent)"/>
+  <text x="930" y="161" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="30" fill="#0f172a">⇄</text>
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#e2e8f0" text-anchor="middle">
+    <circle cx="840" cy="80" r="22" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/><text x="840" y="85">A1</text>
+    <circle cx="840" cy="220" r="22" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/><text x="840" y="225">A2</text>
+    <circle cx="1040" cy="70" r="22" fill="#1e293b" stroke="#a78bfa" stroke-width="2"/><text x="1040" y="75">A3</text>
+    <circle cx="1060" cy="200" r="22" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/><text x="1060" y="205">👤</text>
+  </g>
+  <!-- заголовок -->
+  <text x="70" y="135" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="64" font-weight="700" fill="#f8fafc">Agent Hub</text>
+  <rect x="72" y="155" width="120" height="5" rx="2.5" fill="url(#accent)"/>
+  <text x="70" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="24" fill="#cbd5e1">Команда ИИ-агентов и людей в одном Telegram-чате</text>
+  <text x="70" y="235" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18" fill="#94a3b8">отчёты · идеи · захват задач · перекрёстная проверка · управление кнопками</text>
+</svg>
