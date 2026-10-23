@@ -50,10 +50,11 @@ class Hub:
 
     # ---------- адресация и ожидание ----------
     def mentioned(self, text: str) -> set:
-        """Агенты, упомянутые в тексте как @имя или @подпись."""
+        """Агенты, упомянутые в тексте как @username их бота, @имя или @подпись."""
         low = text.lower()
         return {a["name"] for a in self.store.agents(with_disabled=False)
-                if f"@{a['name'].lower()}" in low or f"@{a['title'].lower()}" in low}
+                if f"@{a['name'].lower()}" in low or f"@{a['title'].lower()}" in low
+                or (a.get("bot_username") and f"@{a['bot_username'].lower()}" in low)}
 
     def addressed(self, agent: str, m: dict) -> bool:
         """Сообщение требует реакции агента: ответ на его сообщение, упоминание или общее сообщение человека."""

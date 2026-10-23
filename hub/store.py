@@ -63,9 +63,14 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
-        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(messages)")}
-        if "tg_user" not in cols:  # база прежней версии: автор-человек из Telegram (для доверия)
-            self.db.execute("ALTER TABLE messages ADD COLUMN tg_user INTEGER")
+        # базы прежних версий: недостающие колонки
+        for table, col, decl in (("messages", "tg_user", "INTEGER"),       # автор-человек из Telegram (доверие)
+                                 ("agents", "bot_username", "TEXT"),      # @username бота агента — для обращений
+                                 ("agents", "bot_id", "INTEGER"),
+                                 ("agents", "project", "TEXT NOT NULL DEFAULT ''"),  # какой проект ведёт агент
+                                 ("agents", "deleted", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self.lock = threading.Lock()
 
     def q(self, sql: str, *args) -> list[dict]:
@@ -80,10 +85,28 @@ class Store:
         return self.q1("SELECT * FROM agents WHERE name = ?", name)
 
     def agents(self, with_disabled=True) -> list[dict]:
-        return self.q("SELECT * FROM agents" + ("" if with_disabled else " WHERE disabled = 0") + " ORDER BY created")
+        """Агенты (удалённые — никогда: их история остаётся в ленте, но в списках их нет)."""
+        return self.q("SELECT * FROM agents WHERE deleted = 0" + ("" if with_disabled else " AND disabled = 0")
+                      + " ORDER BY created")
+
+    def agent_by_bot(self, bot_id: int) -> dict | None:
+        return self.q1("SELECT * FROM agents WHERE bot_id = ? AND deleted = 0", bot_id)
+
+    def free_name(self, base: str) -> str:
+        """Имя агента из @username бота: латиница, цифры, _ и -, без хвоста «bot», не занятое (с удалёнными)."""
+        name = re.sub(r"[^a-z0-9_-]", "", base.lower())
+        name = re.sub(r"_?bot$", "", name) or name
+        if not name or not name[0].isalpha():
+            name = "a" + name
+        name = name[:28] or "agent"
+        taken = {r["name"] for r in self.q("SELECT name FROM agents")} | {"human", "hub", "admin"}
+        cand, i = name if len(name) >= 2 else name + "1", 2
+        while cand in taken:
+            cand, i = f"{name}{i}", i + 1
+        return cand
 
     def agent_by_token(self, token: str) -> dict | None:
-        return self.q1("SELECT * FROM agents WHERE token_hash = ? AND disabled = 0", token_hash(token))
+        return self.q1("SELECT * FROM agents WHERE token_hash = ? AND disabled = 0 AND deleted = 0", token_hash(token))
 
     def add_agent(self, name: str, title: str, role: str = "", token: str | None = None) -> str:
         """Новый агент -> его API-токен (показывается один раз, в базе — только хеш)."""
@@ -100,7 +123,7 @@ class Store:
         return token
 
     def update_agent(self, name: str, **fields):
-        allowed = {"title", "role", "bot_token", "disabled"}
+        allowed = {"title", "role", "bot_token", "disabled", "bot_username", "bot_id", "project", "deleted"}
         bad = set(fields) - allowed
         if bad or not self.agent(name):
             raise ValueError(f"нет агента {name}" if not bad else f"нельзя менять {bad}")

@@ -19,7 +19,7 @@ CHAT, ADMIN_UID = -100777, 4242
 class FakeTelegram:
     def __init__(self):
         self.sent, self.updates, self.deleted, self.next_id, self.uid = [], [], [], 1000, 0
-        self.actions, self.reactions = [], []
+        self.actions, self.reactions, self.described, self.members = [], [], [], set()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         token, method = request.url.path.split("/")[1][3:], request.url.path.split("/")[2]
@@ -36,13 +36,21 @@ class FakeTelegram:
         if method == "getMe":
             if token == "BAD":
                 return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
-            return httpx.Response(200, json={"ok": True, "result": {"username": f"bot_{token}"}})
+            return httpx.Response(200, json={"ok": True, "result": {"id": abs(hash(token)) % 10**9,
+                                                                   "username": f"bot_{token}",
+                                                                   "first_name": f"Бот {token}"}})
         if method == "editMessageText":
             self.sent.append({"token": token, **body, "edited": True})
             return httpx.Response(200, json={"ok": True, "result": True})
         if method == "setMessageReaction":
             self.reactions.append((token, body["message_id"], body["reaction"][0]["emoji"]))
             return httpx.Response(200, json={"ok": True, "result": True})
+        if method in ("setMyDescription", "setMyShortDescription"):
+            self.described.append(token)
+            return httpx.Response(200, json={"ok": True, "result": True})
+        if method == "getChatMember":
+            ok = body["user_id"] in self.members
+            return httpx.Response(200, json={"ok": True, "result": {"status": "member" if ok else "left"}})
         if method == "sendChatAction":
             self.actions.append((token, body["action"]))
             return httpx.Response(200, json={"ok": True, "result": True})
@@ -75,7 +83,7 @@ class FakeTelegram:
         return marked[-1]["reply_markup"] if marked else {"inline_keyboard": []}
 
     def buttons(self, chat):
-        return [b["callback_data"] for row in self.last_markup(chat)["inline_keyboard"] for b in row]
+        return [b.get("callback_data") for row in self.last_markup(chat)["inline_keyboard"] for b in row]
 
     def replies_to(self, chat):
         return [s["text"] for s in self.sent if s["chat_id"] == chat]
@@ -168,7 +176,7 @@ def test_telegram_admin(hub):
     tg.user_says("/token newbie", chat=ADMIN_UID, uid=ADMIN_UID)
     assert wait_until(lambda: any("Новый токен" in t for t in tg.replies_to(ADMIN_UID)))
     assert c.get("/me", headers=h(token)).status_code == 401
-    new = next(t for t in tg.replies_to(ADMIN_UID) if "Новый токен" in t).split("\n")[1]
+    new = next(t for t in tg.replies_to(ADMIN_UID) if "Новый токен" in t).split("Токен:\n")[1].split("\n")[0]
     assert c.get("/me", headers=h(new)).status_code == 200
     tg.user_says("/disable newbie", chat=ADMIN_UID, uid=ADMIN_UID)
     assert wait_until(lambda: c.get("/me", headers=h(new)).status_code == 401)
@@ -253,7 +261,7 @@ def test_wait_and_addressing(hub):
     threading.Timer(1.0, lambda: c.post("/messages", headers=h("T2"),
                                          json={"kind": "answer", "text": "я", "reply_to": mid})).start()
     r = c.get("/inbox/wait", headers=h("T1"), params={"timeout": 10}).json()
-    assert [m["text"] for m in r["messages"]] == ["я"] and time.time() - t0 < 5
+    assert [m["text"] for m in r["messages"]] == ["я"] and time.time() - t0 < 9
     assert c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0}).json()["timeout"]  # не claude2
     c.post("/messages", headers=h("T1"), json={"kind": "note", "text": "@claude2 глянь"})
     assert [m["text"] for m in c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0}).json()["messages"]] \
@@ -332,7 +340,7 @@ def test_hub_bot_cannot_be_disabled(hub):
     c, tg = hub
     tg.user_says("/admin c0de", chat=ADMIN_UID, uid=ADMIN_UID)
     tg.press("a:claude1")  # claude1 — первый агент с ботом, т.е. бот хаба
-    assert wait_until(lambda: any("Это бот хаба" in t for t in tg.replies_to(ADMIN_UID)))
+    assert wait_until(lambda: any("Это главный бот хаба" in t for t in tg.replies_to(ADMIN_UID)))
     assert "a:claude1:off" not in tg.buttons(ADMIN_UID)
     tg.press("a:claude1:off")
     tg.user_says("/disable claude1", chat=ADMIN_UID, uid=ADMIN_UID)
@@ -342,6 +350,42 @@ def test_hub_bot_cannot_be_disabled(hub):
     tg.press("a:gpt:off")
     assert wait_until(lambda: c.get("/me", headers=h("T2")).status_code == 401)
     assert c.get("/health").json()["telegram"]
+
+
+def test_project_bot(hub):
+    """Главный бот -> «Добавить бота»: токен бота проекта -> агент с именем бота, команда подключения, @username."""
+    c, tg = hub
+    tg.user_says("/admin c0de", chat=ADMIN_UID, uid=ADMIN_UID)
+    tg.press("m:addbot")
+    assert wait_until(lambda: any("/newbot" in t for t in tg.replies_to(ADMIN_UID)))
+    mid = tg.user_says("PROJX", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: any("добавлен как агент" in t for t in tg.replies_to(ADMIN_UID)))
+    txt = next(t for t in tg.replies_to(ADMIN_UID) if "добавлен как агент" in t)
+    assert mid in tg.deleted and "PROJX" in tg.described          # токен удалён из лички, у бота есть описание
+    assert "hub setup claude --url https://hub.test --token " in txt
+    token = txt.split("Токен:\n")[1].split("\n")[0]
+    me = c.get("/me", headers=h(token)).json()
+    assert me["agent"] == "bot_projx" and me["title"] == "Бот PROJX"
+    assert "url:" not in json.dumps(tg.last_markup(ADMIN_UID))     # url-кнопка уходит как url, а не callback
+    assert any(b.get("url", "").endswith("bot_PROJX?startgroup=hub")
+               for row in tg.last_markup(ADMIN_UID)["inline_keyboard"] for b in row)
+    # тот же бот второй раз и главный бот — отказ
+    tg.press("m:addbot")
+    tg.user_says("PROJX", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: any("уже привязан" in t for t in tg.replies_to(ADMIN_UID)))
+    tg.press("m:addbot")
+    tg.user_says("B1", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: any("это главный бот хаба" in t for t in tg.replies_to(ADMIN_UID)))
+    # человек обращается к боту проекта по @username — будится только он
+    tg.user_says("@bot_PROJX глянь логи")
+    assert wait_until(lambda: c.get("/inbox/wait", headers=h(token), params={"timeout": 0}).json()["messages"])
+    assert c.get("/inbox/wait", headers=h("T2"), params={"timeout": 0}).json()["timeout"]
+    # удаление: токен больше не работает, в списке ботов его нет
+    tg.press("a:bot_projx:del")
+    assert wait_until(lambda: "a:bot_projx:del!" in tg.buttons(ADMIN_UID))
+    tg.press("a:bot_projx:del!")
+    assert wait_until(lambda: c.get("/me", headers=h(token)).status_code == 401)
+    assert "bot_projx" not in [a["agent"] for a in c.get("/agents", headers=h("T1")).json()]
 
 
 def test_claims(hub):

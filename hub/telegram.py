@@ -157,6 +157,16 @@ class Telegram:
                 except (TgError, httpx.HTTPError) as e:
                     log.warning("статус агента %s не показан: %s", agent, redact(e))
 
+    def backfill_bots(self):
+        """У ботов, привязанных до этой версии или из конфига установки, узнать @username (для обращений в группе)."""
+        for a in self.store.agents():
+            if a["bot_token"] and not a.get("bot_id"):
+                try:
+                    me = self.call(a["bot_token"], "getMe")
+                    self.store.update_agent(a["name"], bot_username=me.get("username"), bot_id=me["id"])
+                except (TgError, httpx.HTTPError, KeyError):
+                    pass
+
     # ---------- группа ----------
     @property
     def chat_id(self) -> int | None:
@@ -292,7 +302,9 @@ class Telegram:
                 if not u.get("is_bot"):
                     self.handle(m, u)
             except (TgError, httpx.HTTPError) as e:
-                log.warning("ответ в Telegram не ушёл: %s", e)
+                log.warning("ответ в Telegram не ушёл: %s", redact(e))
+            except Exception:  # noqa: BLE001  (ошибка в обработке одного сообщения не должна останавливать приём)
+                log.exception("сбой при обработке обновления Telegram %s", up.get("update_id"))
         return len(ups)
 
     def handle(self, m: dict, u: dict):
@@ -355,12 +367,13 @@ class Telegram:
     def start(self):
         if not self.chat_id:
             log.warning("Telegram-группа не выбрана: добавьте бота в группу и выберите её в меню «Группа»")
+        threading.Thread(target=self.backfill_bots, daemon=True, name="backfill_bots").start()
         for target in (self.sender_loop, self.poller_loop, self.busy_loop):
             threading.Thread(target=target, daemon=True, name=target.__name__).start()
 
 
-ADMIN_ONLY = {"/add", "/bot", "/role", "/title", "/disable", "/enable", "/token", "/counter", "/release", "/agents",
-              "/admin"}
+ADMIN_ONLY = {"/add", "/bot", "/role", "/title", "/project", "/disable", "/enable", "/token", "/counter", "/release",
+              "/agents", "/admin"}
 
 
 class TgError(Exception):
@@ -369,7 +382,7 @@ class TgError(Exception):
         self.status, self.retry_after = status, retry_after
 
 
-def wait_until(cond, timeout=5.0):
+def wait_until(cond, timeout=15.0):
     """Для тестов: дождаться условия."""
     t = time.time()
     while time.time() - t < timeout:

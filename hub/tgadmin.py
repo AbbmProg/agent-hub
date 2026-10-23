@@ -1,7 +1,11 @@
-"""Управление хабом из Telegram: меню на кнопках в личке бота-слушателя (только админам) и кнопки в группе.
+"""Управление хабом из Telegram: меню на кнопках в личке главного бота (только админам) и кнопки в группе.
 
-Админ входит один раз: /admin <код из установки>. Дальше /start или /menu — меню; значения (имя агента, роль, токен
-бота) бот спрашивает сообщением и ждёт ответ. Текстовые команды (/add, /role...) тоже работают.
+Модель: **главный бот** хаба — для управления и группы; **боты проектов** — по одному на проект (агента), их создаёт
+админ в @BotFather и называет как хочет, а в хаб добавляет одной кнопкой: присылает токен, хаб сам заводит агента,
+берёт имя бота и выдаёт команду подключения проекта (`hub setup claude …`).
+
+Админ входит один раз: /admin <код из установки>. Дальше /start или /menu — меню; значения бот спрашивает
+сообщением и ждёт ответ. Текстовые команды (/add, /role...) тоже работают.
 """
 import hmac
 import time
@@ -9,12 +13,17 @@ import time
 from .core import HubError
 
 HELP = """Меню — /menu. Те же действия текстом:
-/add <имя> <Заголовок> · /bot <имя> <токен> · /role <имя> <текст> · /title <имя> <текст>
+/add <имя> <Подпись> — агент без своего бота · /bot <имя> <токен> · /role <имя> <текст> · /title <имя> <текст>
 /disable <имя> · /enable <имя> · /token <имя> · /counter <имя> <число> · /release <id захвата>
 /status · /ideas · /digest · /agents · /cancel — отменить ввод"""
 ASK = {
+    "addbot": ("Новый бот проекта:\n"
+               "1. В @BotFather: /newbot — назовите как хотите (имя увидят в группе).\n"
+               "2. Там же: /setprivacy → этот бот → Disable — чтобы он видел реплаи на свои сообщения.\n"
+               "3. Пришлите сюда его токен. Сообщение с токеном я сразу удалю."),
     "add": "Пришлите имя агента латиницей и подпись в чате через пробел.\nНапример: gpt GPT · модели",
     "role": "Пришлите роль (направление) агента {name}.\nНапример: валидация и утечки",
+    "project": "Пришлите, какой проект ведёт {name}: название, папка или ссылка на репозиторий.",
     "title": "Пришлите новую подпись агента {name} в чате.",
     "bot": "Пришлите токен бота для {name} (выдаёт @BotFather). Сообщение с токеном я сразу удалю.",
     "counter": "Пришлите имя счётчика и число через пробел.\nНапример: exp 29 — следующий номер будет 30",
@@ -22,10 +31,13 @@ ASK = {
 
 
 def kb(*rows) -> dict:
-    return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows if row]}
+    """Клавиатура: строки из (текст, callback) или (текст, "url:https://…")."""
+    def btn(t, d):
+        return {"text": t, "url": d[4:]} if d.startswith("url:") else {"text": t, "callback_data": d}
+    return {"inline_keyboard": [[btn(t, d) for t, d in row] for row in rows if row]}
 
 
-MAIN_KB = kb([("👥 Агенты", "m:agents"), ("➕ Добавить агента", "m:add")],
+MAIN_KB = kb([("🤖 Боты проектов", "m:agents"), ("➕ Добавить бота", "m:addbot")],
              [("📊 Статус", "m:status"), ("💡 Идеи", "m:ideas")],
              [("📰 Сводка за сутки", "m:digest"), ("🔢 Счётчики", "m:counters")],
              [("💬 Группа", "m:group"), ("🛡 Доверенные", "m:trust")])
@@ -72,35 +84,61 @@ class AdminUI:
         return text, kb(*rows, [("🔄 Обновить", "m:group")], BACK)
 
     def screen_agents(self):
-        act, now = self.store.last_activity(), time.time()
+        act, now, main = self.store.last_activity(), time.time(), self.tg.listener_name()
         rows, lines = [], []
         for a in self.store.agents():
             t = act.get(a["name"])
             seen = "ещё не писал" if t is None else f"{_ago(now - t)} назад"
-            mark = "🚫" if a["disabled"] else ("🤖" if a["bot_token"] else "•")
-            lines.append(f"{mark} {a['title']} ({a['name']}) — {seen}" + (f"\n    роль: {a['role']}" if a["role"] else ""))
+            mark = "🚫" if a["disabled"] else ("👑" if a["name"] == main else "🤖" if a["bot_token"] else "•")
+            bot = f" @{a['bot_username']}" if a.get("bot_username") else ""
+            lines.append(f"{mark} {a['title']}{bot} — {seen}"
+                         + (f"\n    проект: {a['project']}" if a.get("project") else "")
+                         + (f"\n    роль: {a['role']}" if a["role"] else ""))
             rows.append([(f"{mark} {a['title']}", f"a:{a['name']}")])
-        text = "Агенты (🤖 — свой бот, 🚫 — выключен):\n\n" + ("\n".join(lines) or "пока нет")
-        return text, kb(*rows, [("➕ Добавить агента", "m:add")], BACK)
+        text = ("Боты проектов (👑 — главный бот хаба, 🤖 — бот проекта, • — агент без своего бота, "
+                "🚫 — выключен):\n\n" + ("\n".join(lines) or "пока нет"))
+        return text, kb(*rows, [("➕ Добавить бота", "m:addbot"), ("➕ Агент без бота", "m:add")], BACK)
+
+    def in_group(self, a: dict) -> bool | None:
+        """Состоит ли бот агента в группе хаба (None — неизвестно)."""
+        if not (a.get("bot_id") and self.tg.chat_id):
+            return None
+        try:
+            st = self.tg.call(self.tg.listener_token(), "getChatMember", chat_id=self.tg.chat_id,
+                              user_id=a["bot_id"])["status"]
+        except Exception:  # noqa: BLE001
+            return None
+        return st in ("member", "administrator", "creator")
 
     def screen_agent(self, name: str):
         a = self.store.agent(name)
-        if not a:
-            return "Агент не найден.", kb(BACK)
+        if not a or a.get("deleted"):
+            return "Агент не найден.", kb([("« Боты", "m:agents")])
         t = self.store.last_activity().get(name)
-        text = (f"{a['title']} ({name})\n"
+        main = name == self.tg.listener_name()
+        if a["bot_token"]:
+            bot = f"@{a['bot_username']}" if a.get("bot_username") else "привязан"
+            g = None if main else self.in_group(a)
+            bot += {True: " · в группе ✅", False: " · ⚠️ не в группе — нажмите «Добавить в группу»", None: ""}[g]
+        else:
+            g, bot = None, "нет (пишет через главного бота)"
+        text = (f"{'👑 ' if main else ''}{a['title']} ({name})\n"
+                f"Бот: {bot}\n"
+                f"Проект: {a.get('project') or '—'}\n"
                 f"Роль: {a['role'] or '—'}\n"
-                f"Бот: {'привязан' if a['bot_token'] else 'нет (пишет через бота хаба)'}\n"
                 f"Состояние: {'выключен' if a['disabled'] else 'активен'}\n"
                 f"Последнее сообщение: {'—' if t is None else _ago(time.time() - t) + ' назад'}")
-        if name == self.tg.listener_name():  # бот хаба не выключается: через него идёт весь Telegram
-            text += "\n\n🔒 Это бот хаба — через него работают меню и группа, поэтому выключить его нельзя."
-            toggle = None
+        rows = [[("📁 Проект", f"a:{name}:project"), ("🎭 Роль", f"a:{name}:role")],
+                [("🏷 Подпись", f"a:{name}:title"), ("🤖 Сменить бота" if a["bot_token"] else "🤖 Бот", f"a:{name}:bot")],
+                [("🔑 Новый токен и команда подключения", f"a:{name}:tok")]]
+        if a.get("bot_username") and g is False:
+            rows.insert(0, [("➕ Добавить в группу", f"url:https://t.me/{a['bot_username']}?startgroup=hub")])
+        if main:  # главный бот не выключается и не удаляется: через него идёт весь Telegram
+            text += "\n\n🔒 Это главный бот хаба — через него работают меню и группа, выключить его нельзя."
         else:
-            toggle = [("✅ Включить", f"a:{name}:on") if a["disabled"] else ("⛔ Выключить", f"a:{name}:off")]
-        return text, kb([("🎭 Роль", f"a:{name}:role"), ("🏷 Подпись", f"a:{name}:title")],
-                        [("🤖 Бот", f"a:{name}:bot"), ("🔑 Новый токен", f"a:{name}:tok")],
-                        toggle, [("« Агенты", "m:agents")])
+            rows.append([("✅ Включить", f"a:{name}:on") if a["disabled"] else ("⛔ Выключить", f"a:{name}:off"),
+                         ("🗑 Удалить", f"a:{name}:del")])
+        return text, kb(*rows, [("« Боты", "m:agents")])
 
     def screen_trust(self):
         """Кто может давать агентам указания. Остальные люди в группе видят ленту, но агенты им не подчиняются."""
@@ -180,7 +218,7 @@ class AdminUI:
                 return self.edit(chat, mid, *getattr(self, f"screen_{rest}")())
             if rest in ("status", "ideas", "digest"):
                 return self.edit(chat, mid, self.info_screen(rest), kb(BACK))
-            if rest in ("add", "counter"):
+            if rest in ("add", "addbot", "counter"):
                 self.pending[uid] = (rest, None)
                 return self.send(chat, ASK[rest] + "\n\n/cancel — отмена")
         if kind == "tr":
@@ -197,24 +235,31 @@ class AdminUI:
             return self.edit(chat, mid, f"Готово: хаб работает в группе «{title or gid}».", kb(BACK))
         if kind == "a":
             name, _, act = rest.partition(":")
+            main = name == self.tg.listener_name()
             if not act:
                 return self.edit(chat, mid, *self.screen_agent(name))
-            if act in ("role", "title", "bot"):
+            if act in ("role", "title", "bot", "project"):
                 self.pending[uid] = (act, name)
                 return self.send(chat, ASK[act].format(name=name) + "\n\n/cancel — отмена")
             if act == "tok":
                 return self.edit(chat, mid, f"Выпустить новый токен для {name}? Старый сразу перестанет работать — "
-                                            f"агенту нужно будет обновить ~/.config/agent-hub.json.",
+                                            f"проект нужно будет переподключить новой командой.",
                                  kb([("🔑 Да, выпустить", f"a:{name}:tok!"), ("Отмена", f"a:{name}")]))
             if act == "tok!":
                 token = self.store.rotate_token(name)
-                self.send(chat, f"Новый токен {name} (показываю один раз):\n{token}\n\n" + self.client_config(token))
+                self.send(chat, f"Новый токен {name} (показываю один раз).\n\n" + self.connect_text(token))
                 return self.edit(chat, mid, *self.screen_agent(name))
-            if act in ("on", "off"):
-                if act == "off" and name == self.tg.listener_name():
-                    return self.edit(chat, mid, *self.screen_agent(name))
+            if act in ("on", "off") and not main:
                 self.store.update_agent(name, disabled=int(act == "off"))
-                return self.edit(chat, mid, *self.screen_agent(name))
+            if act == "del" and not main:
+                return self.edit(chat, mid, f"Удалить {name}? Его токен перестанет работать, бот отвяжется от хаба. "
+                                            f"Сообщения в ленте останутся.",
+                                 kb([("🗑 Да, удалить", f"a:{name}:del!"), ("Отмена", f"a:{name}")]))
+            if act == "del!" and not main:
+                self.store.update_agent(name, deleted=1, disabled=1, bot_token=None, bot_id=None)
+                self.hub._system("hub", "system", f"Агент {name} удалён из хаба.")
+                return self.edit(chat, mid, *self.screen_agents())
+            return self.edit(chat, mid, *self.screen_agent(name))
 
     def run(self, chat: int, fn):
         try:
@@ -230,44 +275,91 @@ class AdminUI:
         elif out:
             self.send(chat, out, kb(BACK))
 
-    def client_config(self, token: str) -> str:
+    def connect_text(self, token: str) -> str:
         url = self.tg.cfg.get("public_url") or "<адрес хаба>"
-        return f'Файл ~/.config/agent-hub.json на машине агента:\n{{"url": "{url}", "token": "{token}"}}'
+        return (f"Токен:\n{token}\n\n"
+                f"Подключение проекта — в его папке на машине агента:\n"
+                f"hub setup claude --url {url} --token {token}\n"
+                f"(для Codex — hub setup codex …). Затем запустите claude и напишите: "
+                f"«Подключись к хабу по протоколу и будь на связи».\n\n"
+                f"Без hub setup — файл ~/.config/agent-hub.json:\n{{\"url\": \"{url}\", \"token\": \"{token}\"}}")
 
     # ---------- действия ----------
     def apply_input(self, action: str, name: str | None, text: str, m: dict):
+        if action == "addbot":
+            return self.add_bot(text.strip(), m)
         if action == "add":
             parts = text.split(maxsplit=1)
             return self.add_agent(parts[0].lower(), parts[1] if len(parts) > 1 else parts[0])
         if action == "counter":
-            parts = text.split()
-            return self.set_counter(parts)
+            return self.set_counter(text.split())
         if action == "bot":
             return self.bind_bot(name, text.strip(), m)
         self.store.update_agent(name, **{action: text.strip()})
         return self.screen_agent(name)
 
-    def add_agent(self, name: str, title: str):
-        token = self.store.add_agent(name, title)
-        self.hub._system("hub", "system", f"Новый агент: {title} ({name}).")
-        return (f"Агент {name} создан. Токен (показываю один раз):\n{token}\n\n{self.client_config(token)}",
-                kb([("🤖 Привязать бота", f"a:{name}:bot"), ("🎭 Задать роль", f"a:{name}:role")],
-                   [("« Агенты", "m:agents")]))
-
-    def bind_bot(self, name: str, token: str, m: dict):
+    def _delete_secret(self, m: dict):
         try:  # сообщение с токеном — сразу удалить из лички
             self.tg.call(self.tg.listener_token(), "deleteMessage", chat_id=m["chat"]["id"], message_id=m["message_id"])
         except Exception:  # noqa: BLE001
             pass
-        if not self.store.agent(name):
-            raise ValueError(f"нет агента {name}")
+
+    def _check_bot(self, token: str, name: str | None = None) -> dict:
+        if name is None and token == self.tg.listener_token():
+            raise ValueError("это главный бот хаба — для проекта создайте в @BotFather отдельного бота")
         try:
             me = self.tg.call(token, "getMe")
         except Exception as e:  # noqa: BLE001  (TgError, сеть)
             raise ValueError(f"Telegram не принял токен ({e})") from e
-        self.store.update_agent(name, bot_token=token)
+        other = self.store.agent_by_bot(me["id"])
+        if other and other["name"] != name:
+            raise ValueError(f"бот @{me.get('username')} уже привязан к агенту {other['name']}")
+        return me
+
+    def _describe_bot(self, token: str, title: str):
+        """Описание бота проекта: кто откроет его личку — поймёт, что писать надо в группу."""
+        try:
+            self.tg.call(token, "setMyShortDescription",
+                         short_description=f"Агент «{title}» в хабе агентов. Пишите ему в группе команды.")
+            self.tg.call(token, "setMyDescription",
+                         description=(f"Я агент «{title}» в хабе агентов. В личке не отвечаю — пишите в группе команды: "
+                                      f"упомяните меня или ответьте реплаем на моё сообщение."))
+        except Exception:  # noqa: BLE001  (описание — удобство, не обязательно)
+            pass
+
+    def add_bot(self, token: str, m: dict):
+        """Бот проекта одной кнопкой: токен -> агент с именем бота, описание бота, команда подключения проекта."""
+        self._delete_secret(m)
+        me = self._check_bot(token)
+        title = me.get("first_name") or me.get("username")
+        name = self.store.free_name(me.get("username") or title)
+        api_token = self.store.add_agent(name, title)
+        self.store.update_agent(name, bot_token=token, bot_username=me.get("username"), bot_id=me["id"])
+        self._describe_bot(token, title)
+        self.hub._system("hub", "system", f"Новый бот проекта: {title} (@{me.get('username')}).")
+        rows = [[("➕ Добавить в группу", f"url:https://t.me/{me.get('username')}?startgroup=hub")],
+                [("📁 Проект", f"a:{name}:project"), ("🎭 Роль", f"a:{name}:role")],
+                [("« Боты", "m:agents")]]
+        return (f"🤖 Бот @{me.get('username')} добавлен как агент «{title}» ({name}). Сообщение с токеном бота удалено.\n"
+                f"Осталось: добавить его в группу (кнопка ниже) и подключить проект.\n\n" + self.connect_text(api_token),
+                kb(*rows))
+
+    def add_agent(self, name: str, title: str):
+        token = self.store.add_agent(name, title)
+        self.hub._system("hub", "system", f"Новый агент: {title} ({name}).")
+        return (f"Агент {name} создан. Токен (показываю один раз):\n{token}\n\n{self.connect_text(token)}",
+                kb([("🤖 Привязать бота", f"a:{name}:bot"), ("🎭 Задать роль", f"a:{name}:role")],
+                   [("« Боты", "m:agents")]))
+
+    def bind_bot(self, name: str, token: str, m: dict):
+        self._delete_secret(m)
+        if not self.store.agent(name):
+            raise ValueError(f"нет агента {name}")
+        me = self._check_bot(token, name)
+        self.store.update_agent(name, bot_token=token, bot_username=me.get("username"), bot_id=me["id"])
+        self._describe_bot(token, self.store.agent(name)["title"])
         text, markup = self.screen_agent(name)
-        return f"Бот @{me.get('username')} привязан, сообщение с токеном удалено. Добавьте бота в группу.\n\n" + text, markup
+        return f"Бот @{me.get('username')} привязан, сообщение с токеном удалено.\n\n" + text, markup
 
     def set_counter(self, parts: list):
         if len(parts) < 2 or not parts[1].isdigit():
@@ -289,7 +381,7 @@ class AdminUI:
             if not args:
                 raise ValueError("укажите имя агента")
             if disabled and args[0] == self.tg.listener_name():
-                raise ValueError("это бот хаба — через него работают меню и группа, выключить его нельзя")
+                raise ValueError("это главный бот хаба — через него работают меню и группа, выключить его нельзя")
             self.store.update_agent(args[0], disabled=int(disabled))
             return self.screen_agent(args[0])
         return f
@@ -298,11 +390,11 @@ class AdminUI:
         if not args:
             raise ValueError("/token <имя>")
         token = self.store.rotate_token(args[0])
-        return f"Новый токен {args[0]} (старый больше не работает):\n{token}\n\n" + self.client_config(token)
+        return f"Новый токен {args[0]} (старый больше не работает).\n\n" + self.connect_text(token)
 
     def cmd_add(self, args, m):
         if not args:
-            raise ValueError("/add <имя> <Заголовок>")
+            raise ValueError("/add <имя> <Подпись>")
         return self.add_agent(args[0].lower(), args[1] if len(args) > 1 else args[0])
 
     def cmd_bot(self, args, m):
@@ -320,7 +412,7 @@ class AdminUI:
 TEXT_COMMANDS = {
     "/agents": lambda self, a, m: self.screen_agents(),
     "/add": AdminUI.cmd_add, "/bot": AdminUI.cmd_bot,
-    "/role": AdminUI.cmd_set("role"), "/title": AdminUI.cmd_set("title"),
+    "/role": AdminUI.cmd_set("role"), "/title": AdminUI.cmd_set("title"), "/project": AdminUI.cmd_set("project"),
     "/disable": AdminUI.cmd_toggle(True), "/enable": AdminUI.cmd_toggle(False),
     "/token": AdminUI.cmd_token, "/release": AdminUI.cmd_release,
     "/counter": lambda self, a, m: self.set_counter(" ".join(a).split()),
