@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS agents (
     created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS admins (tg_user INTEGER PRIMARY KEY, name TEXT NOT NULL, ts REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS trusted (tg_user INTEGER PRIMARY KEY, name TEXT NOT NULL, ts REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS people (tg_user INTEGER PRIMARY KEY, name TEXT NOT NULL, last REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -61,6 +63,9 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(messages)")}
+        if "tg_user" not in cols:  # база прежней версии: автор-человек из Telegram (для доверия)
+            self.db.execute("ALTER TABLE messages ADD COLUMN tg_user INTEGER")
         self.lock = threading.Lock()
 
     def q(self, sql: str, *args) -> list[dict]:
@@ -131,17 +136,43 @@ class Store:
     def admins(self) -> list[dict]:
         return self.q("SELECT * FROM admins ORDER BY ts")
 
+    # ---------- доверие к людям ----------
+    def is_trusted(self, tg_user: int | None) -> bool:
+        """Указания агентам дают только доверенные: админы и те, кого админ отметил."""
+        if tg_user is None:
+            return False
+        return self.is_admin(tg_user) or self.q1("SELECT 1 AS x FROM trusted WHERE tg_user = ?", tg_user) is not None
+
+    def set_trusted(self, tg_user: int, name: str, on: bool):
+        with self.lock:
+            if on:
+                self.db.execute("INSERT OR REPLACE INTO trusted (tg_user, name, ts) VALUES (?, ?, ?)",
+                                (tg_user, name, time.time()))
+            else:
+                self.db.execute("DELETE FROM trusted WHERE tg_user = ?", (tg_user,))
+
+    def trusted(self) -> list[dict]:
+        return self.q("SELECT * FROM trusted ORDER BY ts")
+
+    def see_person(self, tg_user: int, name: str):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO people (tg_user, name, last) VALUES (?, ?, ?)",
+                            (tg_user, name, time.time()))
+
+    def people(self, limit=20) -> list[dict]:
+        return self.q("SELECT * FROM people ORDER BY last DESC LIMIT ?", limit)
+
     # ---------- сообщения ----------
     def add_message(self, agent: str, author: str, kind: str, text: str, refs=(), reply_to=None,
-                    tg_state="pending", tg_msg=None, status=None) -> int:
+                    tg_state="pending", tg_msg=None, status=None, tg_user=None) -> int:
         if status is None:
             status = {"idea": "open", "report": "unreviewed"}.get(kind)
         with self.lock:
             cur = self.db.execute(
-                "INSERT INTO messages (ts, agent, author, kind, text, refs, reply_to, status, tg_state, tg_msg) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages (ts, agent, author, kind, text, refs, reply_to, status, tg_state, tg_msg, "
+                "tg_user) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (time.time(), agent, author, kind, text, json.dumps(list(refs), ensure_ascii=False), reply_to,
-                 status, tg_state, tg_msg))
+                 status, tg_state, tg_msg, tg_user))
             return int(cur.lastrowid)
 
     def get(self, mid: int) -> dict | None:

@@ -59,6 +59,8 @@ class Hub:
         """Сообщение требует реакции агента: ответ на его сообщение, упоминание или общее сообщение человека."""
         if m["agent"] == agent:
             return False
+        if m["agent"] == "human" and m.get("status") != "trusted":
+            return False  # посторонний в группе агентов не будит и не командует ими
         parent = self.store.get(m["reply_to"]) if m.get("reply_to") else None
         if parent and parent["agent"] == agent:
             return True

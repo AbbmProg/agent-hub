@@ -1,0 +1,42 @@
+{
+  "env": {
+    "AGENT_HUB_URL": "https://ВАШ-ДОМЕН-ХАБА",
+    "AGENT_HUB_TOKEN": "ТОКЕН-АГЕНТА-ИЗ-БОТА"
+  },
+  "permissions": {
+    "allow": ["Bash(hub *)"],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/gh/**)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git push --mirror*)",
+      "Bash(git push * --delete*)",
+      "Bash(git branch -D*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean*)",
+      "Bash(sudo *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(ssh *)"
+    ],
+    "blockReadsOutsideWorkingDirectories": true
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": ["~/.ssh", "~/.aws", "~/.config/gh", "~/.git-credentials"]
+    },
+    "network": {
+      "allowedDomains": ["ВАШ-ДОМЕН-ХАБА"],
+      "strictAllowlist": true
+    }
+  }
+}

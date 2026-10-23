@@ -28,7 +28,7 @@ def kb(*rows) -> dict:
 MAIN_KB = kb([("👥 Агенты", "m:agents"), ("➕ Добавить агента", "m:add")],
              [("📊 Статус", "m:status"), ("💡 Идеи", "m:ideas")],
              [("📰 Сводка за сутки", "m:digest"), ("🔢 Счётчики", "m:counters")],
-             [("💬 Группа", "m:group")])
+             [("💬 Группа", "m:group"), ("🛡 Доверенные", "m:trust")])
 GROUP_KB = kb([("📊 Статус", "g:status"), ("💡 Идеи", "g:ideas"), ("📰 Сводка", "g:digest")])
 BACK = [("« Меню", "m:main")]
 
@@ -98,6 +98,22 @@ class AdminUI:
                         [("🤖 Бот", f"a:{name}:bot"), ("🔑 Новый токен", f"a:{name}:tok")],
                         [toggle], [("« Агенты", "m:agents")])
 
+    def screen_trust(self):
+        """Кто может давать агентам указания. Остальные люди в группе видят ленту, но агенты им не подчиняются."""
+        admins = {a["tg_user"] for a in self.store.admins()}
+        trusted = {t["tg_user"]: t["name"] for t in self.store.trusted()}
+        lines = ["🛡 Указания агентам дают только доверенные. Сообщения остальных агенты видят с пометкой ⚠️, "
+                 "не выполняют и на них не просыпаются.", "", "Админы (доверенные всегда):"]
+        lines += [f"• {a['name']}" for a in self.store.admins()] or ["—"]
+        rows = []
+        lines += ["", "Доверенные:"] + ([f"• {n}" for n in trusted.values()] or ["—"])
+        rows += [[(f"❌ {n}", f"tr:-{uid}")] for uid, n in trusted.items()]
+        others = [p for p in self.store.people() if p["tg_user"] not in admins and p["tg_user"] not in trusted]
+        if others:
+            lines += ["", "Писали в группе, не доверенные — нажмите, чтобы доверять:"]
+            rows += [[(f"✅ {p['name']}", f"tr:+{p['tg_user']}")] for p in others[:10]]
+        return "\n".join(lines), kb(*rows, BACK)
+
     def screen_counters(self):
         c = self.store.counters()
         text = "Общие счётчики (агенты берут следующий номер: hub next <имя>):\n\n" + (
@@ -156,13 +172,19 @@ class AdminUI:
         self.pending.pop(uid, None)
         kind, _, rest = data.partition(":")
         if kind == "m":
-            if rest in ("main", "agents", "counters", "group"):
+            if rest in ("main", "agents", "counters", "group", "trust"):
                 return self.edit(chat, mid, *getattr(self, f"screen_{rest}")())
             if rest in ("status", "ideas", "digest"):
                 return self.edit(chat, mid, self.info_screen(rest), kb(BACK))
             if rest in ("add", "counter"):
                 self.pending[uid] = (rest, None)
                 return self.send(chat, ASK[rest] + "\n\n/cancel — отмена")
+        if kind == "tr":
+            uid, on = int(rest[1:]), rest[0] == "+"
+            person = next((p for p in self.store.people(1000) if p["tg_user"] == uid), None)
+            name = person["name"] if person else str(uid)
+            self.store.set_trusted(uid, name, on)
+            return self.edit(chat, mid, *self.screen_trust())
         if kind == "grp":
             gid = int(rest)
             title = self.tg.seen_groups().get(gid, "")

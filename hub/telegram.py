@@ -272,8 +272,14 @@ class Telegram:
         name = " ".join(x for x in (u.get("first_name"), u.get("last_name")) if x) or u.get("username") or "человек"
         reply = m.get("reply_to_message") or {}
         parent = self.store.by_tg_msg(reply["message_id"]) if reply.get("message_id") else None
+        uid = u.get("id")
+        if uid is not None:
+            self.store.see_person(uid, name)
+        trusted = self.store.is_trusted(uid)
+        # status сообщения человека: trusted / untrusted — агенты выполняют указания только доверенных
         self.store.add_message("human", name, "human", text, reply_to=parent["id"] if parent else None,
-                               tg_state="skip", tg_msg=m.get("message_id"))
+                               tg_state="skip", tg_msg=m.get("message_id"), tg_user=uid,
+                               status="trusted" if trusted else "untrusted")
 
     def ideas_text(self) -> str:
         ideas = self.hub.ideas("open")
