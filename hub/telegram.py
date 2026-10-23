@@ -186,12 +186,18 @@ class Telegram:
             self.store.kv_set("seen_groups", json.dumps(seen, ensure_ascii=False))
 
     # ---------- боты ----------
-    def listener_token(self) -> str | None:
+    def listener_name(self) -> str | None:
+        """Бот хаба: читает группу и личку, пишет за агентов без своего бота. Выключение его агента (отзыв токена
+        API) Telegram не останавливает — иначе админ потерял бы и меню, чтобы включить его обратно."""
         name = self.cfg.get("listener")
         a = self.store.agent(name) if name else None
         if a and a["bot_token"]:
-            return a["bot_token"]
-        return next((a["bot_token"] for a in self.store.agents(with_disabled=False) if a["bot_token"]), None)
+            return name
+        return next((a["name"] for a in self.store.agents() if a["bot_token"]), None)
+
+    def listener_token(self) -> str | None:
+        name = self.listener_name()
+        return self.store.agent(name)["bot_token"] if name else None
 
     def token_for(self, msg: dict) -> str | None:
         a = self.store.agent(msg["agent"])

@@ -93,10 +93,14 @@ class AdminUI:
                 f"Бот: {'привязан' if a['bot_token'] else 'нет (пишет через бота хаба)'}\n"
                 f"Состояние: {'выключен' if a['disabled'] else 'активен'}\n"
                 f"Последнее сообщение: {'—' if t is None else _ago(time.time() - t) + ' назад'}")
-        toggle = ("✅ Включить", f"a:{name}:on") if a["disabled"] else ("⛔ Выключить", f"a:{name}:off")
+        if name == self.tg.listener_name():  # бот хаба не выключается: через него идёт весь Telegram
+            text += "\n\n🔒 Это бот хаба — через него работают меню и группа, поэтому выключить его нельзя."
+            toggle = None
+        else:
+            toggle = [("✅ Включить", f"a:{name}:on") if a["disabled"] else ("⛔ Выключить", f"a:{name}:off")]
         return text, kb([("🎭 Роль", f"a:{name}:role"), ("🏷 Подпись", f"a:{name}:title")],
                         [("🤖 Бот", f"a:{name}:bot"), ("🔑 Новый токен", f"a:{name}:tok")],
-                        [toggle], [("« Агенты", "m:agents")])
+                        toggle, [("« Агенты", "m:agents")])
 
     def screen_trust(self):
         """Кто может давать агентам указания. Остальные люди в группе видят ленту, но агенты им не подчиняются."""
@@ -207,6 +211,8 @@ class AdminUI:
                 self.send(chat, f"Новый токен {name} (показываю один раз):\n{token}\n\n" + self.client_config(token))
                 return self.edit(chat, mid, *self.screen_agent(name))
             if act in ("on", "off"):
+                if act == "off" and name == self.tg.listener_name():
+                    return self.edit(chat, mid, *self.screen_agent(name))
                 self.store.update_agent(name, disabled=int(act == "off"))
                 return self.edit(chat, mid, *self.screen_agent(name))
 
@@ -282,6 +288,8 @@ class AdminUI:
         def f(self, args, m):
             if not args:
                 raise ValueError("укажите имя агента")
+            if disabled and args[0] == self.tg.listener_name():
+                raise ValueError("это бот хаба — через него работают меню и группа, выключить его нельзя")
             self.store.update_agent(args[0], disabled=int(disabled))
             return self.screen_agent(args[0])
         return f

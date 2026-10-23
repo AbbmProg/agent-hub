@@ -328,6 +328,22 @@ def test_trust(hub):
     assert wait_until(lambda: "tr:+99" in tg.buttons(ADMIN_UID))
 
 
+def test_hub_bot_cannot_be_disabled(hub):
+    c, tg = hub
+    tg.user_says("/admin c0de", chat=ADMIN_UID, uid=ADMIN_UID)
+    tg.press("a:claude1")  # claude1 — первый агент с ботом, т.е. бот хаба
+    assert wait_until(lambda: any("Это бот хаба" in t for t in tg.replies_to(ADMIN_UID)))
+    assert "a:claude1:off" not in tg.buttons(ADMIN_UID)
+    tg.press("a:claude1:off")
+    tg.user_says("/disable claude1", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: any("выключить его нельзя" in t for t in tg.replies_to(ADMIN_UID)))
+    assert c.get("/me", headers=h("T1")).status_code == 200 and c.get("/health").json()["telegram"]
+    # даже если агента бота выключили в базе, Telegram продолжает работать
+    tg.press("a:gpt:off")
+    assert wait_until(lambda: c.get("/me", headers=h("T2")).status_code == 401)
+    assert c.get("/health").json()["telegram"]
+
+
 def test_claims(hub):
     c, _ = hub
     cid = c.post("/claims", headers=h("T1"), json={"topic": "Порог  F1", "note": "S029"}).json()["id"]
