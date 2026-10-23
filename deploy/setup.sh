@@ -135,7 +135,7 @@ echo "Хаб: $URL"
 "$APP/.venv/bin/python" "$APP/deploy/configure.py" tokens --config "$CONF" | sed 's/^/   /'
 CODE=$("$APP/.venv/bin/python" -c "import json;print(json.load(open('$CONF'))['admin_code'])")
 echo
-echo "Управление из Telegram: напишите боту-слушателю в личку  /admin $CODE  — дальше /add, /bot, /role, /help."
+echo "Управление из Telegram: напишите главному боту в личку  /admin $CODE  — дальше /add, /bot, /role, /help."
 echo "Подключение агента:  AGENT_HUB_URL=$URL AGENT_HUB_TOKEN=<токен агента> python3 client/hub.py whoami"
 [[ -z "$DOMAIN" ]] && echo "Внимание: без --domain трафик идёт по HTTP — используйте только в доверенной сети."
 exit 0

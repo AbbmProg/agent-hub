@@ -36,6 +36,11 @@ class FakeTelegram:
             if token == "BAD":
                 return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
             return httpx.Response(200, json={"ok": True, "result": {"username": f"bot_{token}"}})
+        if method == "editMessageText":
+            self.sent.append({"token": token, **body, "edited": True})
+            return httpx.Response(200, json={"ok": True, "result": True})
+        if method == "answerCallbackQuery":
+            return httpx.Response(200, json={"ok": True, "result": True})
         if method == "deleteMessage":
             self.deleted.append(body["message_id"])
             return httpx.Response(200, json={"ok": True, "result": True})
@@ -49,6 +54,20 @@ class FakeTelegram:
             m["reply_to_message"] = {"message_id": reply_to}
         self.updates.append({"update_id": self.uid, "message": m})
         return m["message_id"]
+
+    def press(self, data, chat=None, uid=None):
+        chat = chat or ADMIN_UID
+        self.uid += 1
+        q = {"id": f"q{self.uid}", "from": {"id": uid or chat}, "data": data,
+             "message": {"message_id": 9000 + self.uid,
+                         "chat": {"id": chat, "type": "private" if chat > 0 else "supergroup"}}}
+        self.updates.append({"update_id": self.uid, "callback_query": q})
+
+    def last_markup(self, chat):
+        return [s for s in self.sent if s["chat_id"] == chat and s.get("reply_markup")][-1]["reply_markup"]
+
+    def buttons(self, chat):
+        return [b["callback_data"] for row in self.last_markup(chat)["inline_keyboard"] for b in row]
 
     def replies_to(self, chat):
         return [s["text"] for s in self.sent if s["chat_id"] == chat]
@@ -131,9 +150,9 @@ def test_telegram_admin(hub):
     mid = tg.user_says("/bot newbie NEWBOT", chat=ADMIN_UID, uid=ADMIN_UID)
     tg.user_says("/bot newbie BAD", chat=ADMIN_UID, uid=ADMIN_UID)
     tg.user_says("/role newbie валидация и утечки", chat=ADMIN_UID, uid=ADMIN_UID)
-    assert wait_until(lambda: any("= валидация и утечки" in t for t in tg.replies_to(ADMIN_UID)))
+    assert wait_until(lambda: any("Роль: валидация и утечки" in t for t in tg.replies_to(ADMIN_UID)))
     assert mid in tg.deleted and any("@bot_NEWBOT привязан" in t for t in tg.replies_to(ADMIN_UID))
-    assert any("Telegram ответил" in t for t in tg.replies_to(ADMIN_UID))
+    assert any("Telegram не принял токен" in t for t in tg.replies_to(ADMIN_UID))
     assert c.get("/me", headers=h(token)).json()["role"] == "валидация и утечки"
     c.post("/messages", headers=h(token), json={"kind": "note", "text": "привет"})
     assert wait_until(lambda: any(s["token"] == "NEWBOT" and "привет" in s["text"] for s in tg.sent))
@@ -147,6 +166,48 @@ def test_telegram_admin(hub):
     assert wait_until(lambda: c.get("/me", headers=h(new)).status_code == 401)
     tg.user_says("/counter exp 28", chat=ADMIN_UID, uid=ADMIN_UID)
     assert wait_until(lambda: c.get("/counters", headers=h("T1")).json().get("exp") == 28)
+
+
+def test_buttons(hub):
+    c, tg = hub
+    tg.user_says("/admin c0de", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: "m:agents" in (tg.buttons(ADMIN_UID) if tg.replies_to(ADMIN_UID) else []))
+    tg.press("m:agents")
+    assert wait_until(lambda: "a:gpt" in tg.buttons(ADMIN_UID))
+    tg.press("a:gpt")
+    assert wait_until(lambda: "a:gpt:role" in tg.buttons(ADMIN_UID))
+    # роль: кнопка -> бот спрашивает -> ответ текстом
+    tg.press("a:gpt:role")
+    assert wait_until(lambda: any("Пришлите роль" in t for t in tg.replies_to(ADMIN_UID)))
+    tg.user_says("модели и признаки", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: c.get("/me", headers=h("T2")).json()["role"] == "модели и признаки")
+    # добавить агента кнопкой
+    tg.press("m:add")
+    assert wait_until(lambda: any("имя агента латиницей" in t for t in tg.replies_to(ADMIN_UID)))
+    tg.user_says("Bob Боб · проверки", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: any("Агент bob создан" in t for t in tg.replies_to(ADMIN_UID)))
+    token = next(t for t in tg.replies_to(ADMIN_UID) if "Агент bob создан" in t).split("один раз):\n")[1].split("\n")[0]
+    assert c.get("/me", headers=h(token)).json()["title"] == "Боб · проверки"
+    # новый токен — только после подтверждения
+    tg.press("a:gpt:tok")
+    assert wait_until(lambda: "a:gpt:tok!" in tg.buttons(ADMIN_UID))
+    assert c.get("/me", headers=h("T2")).status_code == 200
+    tg.press("a:gpt:tok!")
+    assert wait_until(lambda: c.get("/me", headers=h("T2")).status_code == 401)
+    # выключить кнопкой; /cancel сбрасывает ожидание ввода
+    tg.press("a:bob:off")
+    assert wait_until(lambda: c.get("/me", headers=h(token)).status_code == 401)
+    tg.press("a:bob:title")
+    tg.user_says("/cancel", chat=ADMIN_UID, uid=ADMIN_UID)
+    tg.user_says("не подпись", chat=ADMIN_UID, uid=ADMIN_UID)
+    assert wait_until(lambda: tg.replies_to(ADMIN_UID)[-1].startswith("Хаб агентов"))
+    assert [a["title"] for a in c.get("/agents", headers=h("T1")).json() if a["agent"] == "bob"] == ["Боб · проверки"]
+    # не-админ кнопками ничего не меняет; кнопки в группе — всем
+    n = len(tg.sent)
+    tg.press("a:claude1:off", chat=777, uid=777)
+    tg.press("g:status", chat=CHAT, uid=5)
+    assert wait_until(lambda: any(s["chat_id"] == CHAT and s["text"].startswith("Агенты:") for s in tg.sent[n:]))
+    assert c.get("/me", headers=h("T1")).status_code == 200
 
 
 def test_claims(hub):
