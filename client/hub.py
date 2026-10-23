@@ -38,7 +38,7 @@ def config() -> tuple[str, str]:
     if not url or not token:
         sys.exit("hub: задайте AGENT_HUB_URL и AGENT_HUB_TOKEN (или ~/.config/agent-hub.json)")
     token = token.strip()
-    if not token.isascii() or " " in token or len(token) < 20:
+    if not token.isascii() or " " in token:
         sys.exit(f"hub: в {path} не настоящий токен ({token[:12]}…). Создайте агента в боте хаба "
                  "(/menu → «Добавить агента») и вставьте строку из его ответа целиком")
     if not url.startswith(("http://", "https://")):
