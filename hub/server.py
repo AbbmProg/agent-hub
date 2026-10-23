@@ -151,6 +151,8 @@ def create_app(cfg: dict | None = None, transport=None) -> FastAPI:
     @app.get("/inbox")
     def inbox(limit: int = Query(100, le=1000), peek: bool = False, agent: str = Depends(agent_only)):
         items, more = st["store"].inbox(agent, limit, peek)
+        if not peek:  # агент прочитал — люди видят 👀 и «думает…»
+            st["tg"].picked_up(agent, [m for m in items if st["hub"].addressed(agent, m)])
         return {"messages": items, "more": more}
 
     @app.get("/inbox/wait")
@@ -158,6 +160,7 @@ def create_app(cfg: dict | None = None, transport=None) -> FastAPI:
                    agent: str = Depends(agent_only)):
         """Длинный опрос: вернуть, как только появится непрочитанное для агента (адресованное ему или, с all, любое)."""
         msgs = st["hub"].wait(agent, timeout, all_)
+        st["tg"].picked_up(agent, [m for m in msgs if st["hub"].addressed(agent, m)])
         return {"messages": msgs, "timeout": not msgs}
 
     @app.post("/busy")

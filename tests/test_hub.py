@@ -19,7 +19,7 @@ CHAT, ADMIN_UID = -100777, 4242
 class FakeTelegram:
     def __init__(self):
         self.sent, self.updates, self.deleted, self.next_id, self.uid = [], [], [], 1000, 0
-        self.actions = []
+        self.actions, self.reactions = [], []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         token, method = request.url.path.split("/")[1][3:], request.url.path.split("/")[2]
@@ -39,6 +39,9 @@ class FakeTelegram:
             return httpx.Response(200, json={"ok": True, "result": {"username": f"bot_{token}"}})
         if method == "editMessageText":
             self.sent.append({"token": token, **body, "edited": True})
+            return httpx.Response(200, json={"ok": True, "result": True})
+        if method == "setMessageReaction":
+            self.reactions.append((token, body["message_id"], body["reaction"][0]["emoji"]))
             return httpx.Response(200, json={"ok": True, "result": True})
         if method == "sendChatAction":
             self.actions.append((token, body["action"]))
@@ -267,21 +270,42 @@ def test_wait_and_addressing(hub):
 def test_busy_status(hub):
     c, tg = hub
     assert c.post("/busy", headers=h("T1"), json={"text": "изучает коммит…"}).status_code == 200
-    assert wait_until(lambda: any(s.get("text") == "⏳ Claude #1 · изучает коммит…" and s["token"] == "B1"
+    assert wait_until(lambda: any(s.get("text", "").startswith("⏳ Claude #1 · изучает коммит.") and s["token"] == "B1"
                                   for s in tg.sent))
     status_id = next(s["message_id"] for s in tg.sent if s.get("text", "").startswith("⏳"))
     assert wait_until(lambda: ("B1", "typing") in tg.actions)
     c.post("/busy", headers=h("T1"), json={"text": "запускает тесты…"})
-    assert wait_until(lambda: any(s.get("edited") and s["text"] == "⏳ Claude #1 · запускает тесты…" for s in tg.sent))
+    assert wait_until(lambda: any(s.get("edited") and s["text"].startswith("⏳ Claude #1 · запускает тесты.")
+                                  for s in tg.sent))
+    # бегущие точки: статус меняется сам
+    assert wait_until(lambda: len({s["text"] for s in tg.sent if s.get("edited")
+                                   and s["text"].startswith("⏳ Claude #1 · запускает тесты")}) >= 2)
     c.post("/messages", headers=h("T1"), json={"kind": "answer", "text": "готово"})
     assert wait_until(lambda: status_id in tg.deleted)
     assert wait_until(lambda: any(s.get("text", "").endswith("готово") for s in tg.sent))
     # снять вручную; агент без бота показывает статус через бота-слушателя
     c.post("/busy", headers=h("T3"), json={})
-    assert wait_until(lambda: any(s.get("text") == "⏳ Claude #2 · думает…" and s["token"] == "B1" for s in tg.sent))
-    sid = [s["message_id"] for s in tg.sent if s.get("text") == "⏳ Claude #2 · думает…"][-1]
+    assert wait_until(lambda: any(s.get("text", "").startswith("⏳ Claude #2 · думает") and s["token"] == "B1"
+                                  and not s.get("edited") for s in tg.sent))
+    sid = [s["message_id"] for s in tg.sent if s.get("text", "").startswith("⏳ Claude #2 · думает")
+           and not s.get("edited")][-1]
     c.delete("/busy", headers=h("T3"))
     assert wait_until(lambda: sid in tg.deleted)
+
+
+def test_heard_reactions(hub):
+    """Человек написал -> агент взял: 👀 и «думает…» автоматически; агент ответил -> 👍, статус убран."""
+    c, tg = hub
+    mid = tg.user_says("посчитай метрику")
+    assert wait_until(lambda: c.get("/inbox/wait", headers=h("T1"), params={"timeout": 0}).json()["messages"])
+    assert wait_until(lambda: ("B1", mid, "👀") in tg.reactions)
+    assert wait_until(lambda: any(s.get("text", "").startswith("⏳ Claude #1 · думает") for s in tg.sent))
+    c.get("/inbox", headers=h("T1"))
+    assert tg.reactions.count(("B1", mid, "👀")) == 1  # повторно не ставится
+    c.post("/messages", headers=h("T1"), json={"kind": "answer", "text": "готово"})
+    assert wait_until(lambda: ("B1", mid, "👍") in tg.reactions)
+    status = [s["message_id"] for s in tg.sent if s.get("text", "").startswith("⏳ Claude #1") and not s.get("edited")]
+    assert wait_until(lambda: status[-1] in tg.deleted)
 
 
 def test_trust(hub):

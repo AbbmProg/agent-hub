@@ -74,13 +74,43 @@ class Telegram:
         # «агент работает»: сообщение-статус от бота агента + «печатает…»; исчезает с его следующим сообщением
         self.busy: dict[str, dict] = {}
         self.busy_lock = threading.Lock()
-        self.busy_interval = float(cfg.get("busy_interval", 4.0))
+        self.busy_interval = float(cfg.get("busy_interval", 5.0))
+        self.busy_wake = threading.Event()  # новый статус — показать сразу, не ждать такта
+        self.acked: dict[str, set] = {}     # агент -> сообщения людей (tg id), которые он взял (👀) и ещё не ответил
 
     # ---------- статус «думает…» ----------
     def set_busy(self, agent: str, text: str, ttl: float):
         with self.busy_lock:
             b = self.busy.setdefault(agent, {"tg_msg": None, "shown": None})
             b.update(text=text.strip() or "думает…", until=time.time() + ttl)
+        self.busy_wake.set()
+
+    # ---------- «услышал»: реакции на сообщения людей ----------
+    def react(self, agent: str, tg_msg: int, emoji: str):
+        if not self.enabled:
+            return
+        try:
+            self.call(self.token_for({"agent": agent}), "setMessageReaction", chat_id=self.chat_id,
+                      message_id=tg_msg, reaction=[{"type": "emoji", "emoji": emoji}])
+        except (TgError, httpx.HTTPError) as e:
+            log.warning("реакция не поставлена: %s", redact(e))
+
+    def picked_up(self, agent: str, msgs: list):
+        """Агент взял сообщения людей: 👀 на каждое и статус «думает…» — люди сразу видят, что их услышали."""
+        new = [m for m in msgs if m["agent"] == "human" and m.get("tg_msg")
+               and m["tg_msg"] not in self.acked.get(agent, set())]
+        if not new:
+            return
+        for m in new:
+            self.acked.setdefault(agent, set()).add(m["tg_msg"])
+            self.react(agent, m["tg_msg"], "👀")
+        if agent not in self.busy:
+            self.set_busy(agent, "думает", 15 * 60)
+
+    def answered(self, agent: str):
+        """Агент написал в ленту — его 👀 меняются на 👍."""
+        for tg_msg in self.acked.pop(agent, set()):
+            self.react(agent, tg_msg, "👍")
 
     def clear_busy(self, agent: str):
         with self.busy_lock:
@@ -95,14 +125,21 @@ class Telegram:
             pass
 
     def busy_loop(self):
-        while not self.stop.wait(self.busy_interval):
+        while not self.stop.is_set():
+            self.busy_wake.wait(self.busy_interval)
+            self.busy_wake.clear()
             for agent, b in list(self.busy.items()):
                 if time.time() > b["until"]:
                     self.clear_busy(agent)
                     continue
                 if not self.enabled:
                     continue
-                token, text = self.token_for({"agent": agent}), f"⏳ {self.hub.title(agent)} · {b['text']}"
+                # бегущие точки: «думает.» → «думает..» → «думает...»; через минуту — сколько уже работает
+                b["tick"] = b.get("tick", -1) + 1
+                core = b["text"].rstrip(".… ")
+                mins = int((time.time() - b.setdefault("since", time.time())) // 60)
+                text = f"⏳ {self.hub.title(agent)} · {core}{'.' * (b['tick'] % 3 + 1)}" + (f" ({mins} мин)" if mins else "")
+                token = self.token_for({"agent": agent})
                 try:
                     if b["tg_msg"] is None:
                         b["tg_msg"] = self.call(token, "sendMessage", chat_id=self.chat_id, text=text,
@@ -208,6 +245,8 @@ class Telegram:
                     if msg["kind"] in AGENT_KINDS and msg["agent"] in self.busy:
                         self.clear_busy(msg["agent"])  # агент ответил — «думает…» убираем
                     tg_msg = self.send(msg)
+                    if msg["kind"] in AGENT_KINDS:
+                        self.answered(msg["agent"])
                     self.store.set_tg(msg["id"], "sent" if tg_msg else "skip", tg_msg)
                     backoff = 1.0
                     self.stop.wait(1.1)  # в группу — не чаще ~20 сообщений в минуту
