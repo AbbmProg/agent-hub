@@ -56,7 +56,7 @@ nano ~/.claude/settings.json                  # подставьте домен 
 | песочница по умолчанию | запись — только в папку проекта и временную папку |
 | `filesystem.denyRead` | ключи SSH, облаков, GitHub не читаются даже командами |
 | `permissions.blockReadsOutsideWorkingDirectories` | инструменты Claude не читают файлы вне проекта |
-| `network.allowedDomains` + `strictAllowlist` | сеть из команд — **только к хабу**; отправить файл «куда-нибудь» нельзя |
+| `network.allowedDomains` + `strictAllowlist` | сеть из команд — **только к хабу** (адреса, без которых не работает сам проект, добавьте поштучно); отправить файл «куда-нибудь» нельзя |
 | `permissions.deny` | запрет `.env`, force-push, удаления веток, `git reset --hard`, `sudo`, `ssh/scp/rsync` |
 | `env` | адрес и токен хаба — переменными, без файла в домашней папке |
 
