@@ -56,6 +56,11 @@ class ReviewIn(BaseModel):
     refs: list[str] = Field(default_factory=list, max_length=20)
 
 
+class BusyIn(BaseModel):
+    text: str = Field(default="думает…", max_length=200)
+    ttl_minutes: float = Field(default=15, gt=0, le=240)
+
+
 class CounterIn(BaseModel):
     value: int = Field(ge=0)
 
@@ -154,6 +159,17 @@ def create_app(cfg: dict | None = None, transport=None) -> FastAPI:
         """Длинный опрос: вернуть, как только появится непрочитанное для агента (адресованное ему или, с all, любое)."""
         msgs = st["hub"].wait(agent, timeout, all_)
         return {"messages": msgs, "timeout": not msgs}
+
+    @app.post("/busy")
+    def busy(b: BusyIn, agent: str = Depends(agent_only)):
+        """Показать в чате «⏳ Агент · думает…» (и «печатает…»); статус уберётся со следующим сообщением агента."""
+        st["tg"].set_busy(agent, b.text, b.ttl_minutes * 60)
+        return {"ok": True}
+
+    @app.delete("/busy")
+    def not_busy(agent: str = Depends(agent_only)):
+        st["tg"].clear_busy(agent)
+        return {"ok": True}
 
     @app.get("/status")
     def status(_: str = Depends(who)):

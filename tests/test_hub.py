@@ -19,6 +19,7 @@ CHAT, ADMIN_UID = -100777, 4242
 class FakeTelegram:
     def __init__(self):
         self.sent, self.updates, self.deleted, self.next_id, self.uid = [], [], [], 1000, 0
+        self.actions = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         token, method = request.url.path.split("/")[1][3:], request.url.path.split("/")[2]
@@ -38,6 +39,9 @@ class FakeTelegram:
             return httpx.Response(200, json={"ok": True, "result": {"username": f"bot_{token}"}})
         if method == "editMessageText":
             self.sent.append({"token": token, **body, "edited": True})
+            return httpx.Response(200, json={"ok": True, "result": True})
+        if method == "sendChatAction":
+            self.actions.append((token, body["action"]))
             return httpx.Response(200, json={"ok": True, "result": True})
         if method == "answerCallbackQuery":
             return httpx.Response(200, json={"ok": True, "result": True})
@@ -76,7 +80,7 @@ class FakeTelegram:
 @pytest.fixture
 def hub(tmp_path):
     cfg = {"db": str(tmp_path / "hub.db"), "chat_id": CHAT, "admin_token": "ADM", "admin_code": "c0de",
-           "public_url": "https://hub.test", "digest_hour": None,
+           "public_url": "https://hub.test", "digest_hour": None, "busy_interval": 0.2,
            "agents": {"claude1": {"title": "Claude #1", "api_token": "T1", "bot_token": "B1"},
                       "gpt": {"title": "GPT", "api_token": "T2", "bot_token": "B2"},
                       "claude2": {"title": "Claude #2", "api_token": "T3"}}}
@@ -257,6 +261,26 @@ def test_wait_and_addressing(hub):
     texts = [m["text"] for m in c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0}).json()["messages"]]
     assert texts == ["всем привет"]
     assert len(c.get("/inbox/wait", headers=h("T3"), params={"timeout": 0, "all": "true"}).json()["messages"]) == 2
+
+
+def test_busy_status(hub):
+    c, tg = hub
+    assert c.post("/busy", headers=h("T1"), json={"text": "изучает коммит…"}).status_code == 200
+    assert wait_until(lambda: any(s.get("text") == "⏳ Claude #1 · изучает коммит…" and s["token"] == "B1"
+                                  for s in tg.sent))
+    status_id = next(s["message_id"] for s in tg.sent if s.get("text", "").startswith("⏳"))
+    assert wait_until(lambda: ("B1", "typing") in tg.actions)
+    c.post("/busy", headers=h("T1"), json={"text": "запускает тесты…"})
+    assert wait_until(lambda: any(s.get("edited") and s["text"] == "⏳ Claude #1 · запускает тесты…" for s in tg.sent))
+    c.post("/messages", headers=h("T1"), json={"kind": "answer", "text": "готово"})
+    assert wait_until(lambda: status_id in tg.deleted)
+    assert wait_until(lambda: any(s.get("text", "").endswith("готово") for s in tg.sent))
+    # снять вручную; агент без бота показывает статус через бота-слушателя
+    c.post("/busy", headers=h("T3"), json={})
+    assert wait_until(lambda: any(s.get("text") == "⏳ Claude #2 · думает…" and s["token"] == "B1" for s in tg.sent))
+    sid = [s["message_id"] for s in tg.sent if s.get("text") == "⏳ Claude #2 · думает…"][-1]
+    c.delete("/busy", headers=h("T3"))
+    assert wait_until(lambda: sid in tg.deleted)
 
 
 def test_claims(hub):

@@ -16,7 +16,7 @@ import time
 
 import httpx
 
-from .core import Hub
+from .core import AGENT_KINDS, Hub
 from .tgadmin import GROUP_KB, AdminUI
 
 log = logging.getLogger("agent-hub.telegram")
@@ -71,6 +71,54 @@ class Telegram:
         self.base = (cfg.get("tg_api") or "https://api.telegram.org").rstrip("/")
         self.stop = threading.Event()
         self.admin = AdminUI(self)
+        # «агент работает»: сообщение-статус от бота агента + «печатает…»; исчезает с его следующим сообщением
+        self.busy: dict[str, dict] = {}
+        self.busy_lock = threading.Lock()
+        self.busy_interval = float(cfg.get("busy_interval", 4.0))
+
+    # ---------- статус «думает…» ----------
+    def set_busy(self, agent: str, text: str, ttl: float):
+        with self.busy_lock:
+            b = self.busy.setdefault(agent, {"tg_msg": None, "shown": None})
+            b.update(text=text.strip() or "думает…", until=time.time() + ttl)
+
+    def clear_busy(self, agent: str):
+        with self.busy_lock:
+            b = self.busy.pop(agent, None)
+        if b and b.get("tg_msg") and self.chat_id:
+            self._delete(agent, b["tg_msg"])
+
+    def _delete(self, agent: str, tg_msg: int):
+        try:
+            self.call(self.token_for({"agent": agent}), "deleteMessage", chat_id=self.chat_id, message_id=tg_msg)
+        except (TgError, httpx.HTTPError):
+            pass
+
+    def busy_loop(self):
+        while not self.stop.wait(self.busy_interval):
+            for agent, b in list(self.busy.items()):
+                if time.time() > b["until"]:
+                    self.clear_busy(agent)
+                    continue
+                if not self.enabled:
+                    continue
+                token, text = self.token_for({"agent": agent}), f"⏳ {self.hub.title(agent)} · {b['text']}"
+                try:
+                    if b["tg_msg"] is None:
+                        b["tg_msg"] = self.call(token, "sendMessage", chat_id=self.chat_id, text=text,
+                                                disable_notification=True)["message_id"]
+                        b["shown"] = text
+                        with self.busy_lock:
+                            gone = self.busy.get(agent) is not b
+                        if gone:  # ответ агента пришёл, пока статус отправлялся
+                            self._delete(agent, b["tg_msg"])
+                            continue
+                    elif b["shown"] != text:
+                        self.call(token, "editMessageText", chat_id=self.chat_id, message_id=b["tg_msg"], text=text)
+                        b["shown"] = text
+                    self.call(token, "sendChatAction", chat_id=self.chat_id, action="typing")
+                except (TgError, httpx.HTTPError) as e:
+                    log.warning("статус агента %s не показан: %s", agent, redact(e))
 
     # ---------- группа ----------
     @property
@@ -157,6 +205,8 @@ class Telegram:
                     self.store.set_tg(msg["id"], "skip")
                     continue
                 try:
+                    if msg["kind"] in AGENT_KINDS and msg["agent"] in self.busy:
+                        self.clear_busy(msg["agent"])  # агент ответил — «думает…» убираем
                     tg_msg = self.send(msg)
                     self.store.set_tg(msg["id"], "sent" if tg_msg else "skip", tg_msg)
                     backoff = 1.0
@@ -254,7 +304,7 @@ class Telegram:
     def start(self):
         if not self.chat_id:
             log.warning("Telegram-группа не выбрана: добавьте бота в группу и выберите её в меню «Группа»")
-        for target in (self.sender_loop, self.poller_loop):
+        for target in (self.sender_loop, self.poller_loop, self.busy_loop):
             threading.Thread(target=target, daemon=True, name=target.__name__).start()
 
 

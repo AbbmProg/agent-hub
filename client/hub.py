@@ -13,6 +13,7 @@
     hub ideas [--all]             # очередь идей; hub take <id> — взять чужую идею; hub close <id> done|dropped "итог"
     hub reviews                   # чужие отчёты, ждущие проверки; hub review <id> confirm|refute "что проверил" --ref ...
     hub status                    # кто чем занят, свободные идеи, что ждёт проверки
+    hub busy "изучает коммит…"    # статус в чате «⏳ Агент · изучает коммит…»; уходит с ответом; hub busy --off
     hub wait [--timeout 600]      # ждать сообщения для меня (реплай мне, @упоминание, общее от человека); --all — любое
     hub watch --exec "команда"    # служба: на каждое новое сообщение для меня — запустить команду (текст — в stdin)
     hub next exp                  # следующий номер общего счётчика (например, номера экспериментов)
@@ -116,10 +117,18 @@ def watch(cmd: str, everything: bool, cooldown: float):
                             for m in msgs)
         print(f"hub watch: {len(msgs)} новых — запускаю команду", flush=True)
         try:
+            call("POST", "/busy", {"text": "думает…", "ttl_minutes": 60})
+        except SystemExit:
+            pass
+        try:
             subprocess.run(cmd, shell=True, input=text, text=True, env={**os.environ, "HUB_MESSAGES": text},
                            timeout=3600)
         except subprocess.TimeoutExpired:
             print("hub watch: команда работала дольше часа — прервана", file=sys.stderr, flush=True)
+        try:  # агент ответил — статус уже снят; не ответил — снимаем, чтобы «думает…» не висело
+            call("DELETE", "/busy")
+        except SystemExit:
+            pass
         time.sleep(cooldown)
 
 
@@ -166,6 +175,10 @@ def main(argv=None):
     p.add_argument("text", help='что и как проверено; "-" — со stdin')
     p.add_argument("--ref", action="append", default=[])
     sub.add_parser("status", help="сводка: кто чем занят")
+    p = sub.add_parser("busy", help="показать в чате, что агент работает («думает…»)")
+    p.add_argument("text", nargs="?", default="думает…")
+    p.add_argument("--off", action="store_true", help="убрать статус")
+    p.add_argument("--ttl", type=float, default=15, help="минут до автоматического снятия")
     p = sub.add_parser("wait", help="ждать сообщения для меня (код выхода 3 — истекло время)")
     p.add_argument("--timeout", type=float, default=0, help="секунд; 0 — ждать сколько угодно")
     p.add_argument("--all", action="store_true", help="любое новое сообщение, а не только адресованное мне")
@@ -265,6 +278,12 @@ def main(argv=None):
         if not a.json:
             print(out["text"])
             return
+    elif a.cmd == "busy":
+        if a.off:
+            call("DELETE", "/busy")
+        else:
+            call("POST", "/busy", {"text": a.text, "ttl_minutes": a.ttl})
+        return
     elif a.cmd == "wait":
         msgs = wait_for(a.timeout, a.all)
         if a.json:
