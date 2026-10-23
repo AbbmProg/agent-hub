@@ -13,13 +13,13 @@
 # С --domain: Caddy с автоматическим HTTPS (порты 80 и 443 должны быть открыты, DNS домена — на этот сервер).
 set -euo pipefail
 
-DOMAIN="" EMAIL="" PORT=8787 CHAT_ID="" LISTENER="" TG_PROXY="__keep__" DIGEST=""
+DOMAIN="" EMAIL="" PORT=8787 PORT_SET=0 CHAT_ID="" LISTENER="" TG_PROXY="__keep__" DIGEST=""
 AGENTS=() BOTS=() ADMINS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="$2"; shift 2 ;;
     --email) EMAIL="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
+    --port) PORT="$2"; PORT_SET=1; shift 2 ;;
     --agent) AGENTS+=("$2"); shift 2 ;;
     --bot) BOTS+=("$2"); shift 2 ;;
     --chat-id) CHAT_ID="$2"; shift 2 ;;
@@ -36,6 +36,14 @@ done
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 APP=/opt/agent-hub ETC=/etc/agent-hub DATA=/var/lib/agent-hub USER_NAME=agenthub
 CONF="$ETC/config.json"
+
+# повторный запуск без --domain / --email / --port — берём сохранённые при прошлой установке
+if [[ -f "$CONF" ]]; then
+  read -r SAVED_DOMAIN SAVED_EMAIL SAVED_PORT < <(python3 -c "import json;c=json.load(open('$CONF'));print(c.get('domain') or '-', c.get('email') or '-', c.get('port') or '-')")
+  [[ -z "$DOMAIN" && "$SAVED_DOMAIN" != "-" ]] && DOMAIN="$SAVED_DOMAIN"
+  [[ -z "$EMAIL" && "$SAVED_EMAIL" != "-" ]] && EMAIL="$SAVED_EMAIL"
+  [[ "$PORT_SET" != 1 && "$SAVED_PORT" != "-" ]] && PORT="$SAVED_PORT"
+fi
 
 echo "== пакеты"
 export DEBIAN_FRONTEND=noninteractive
@@ -61,7 +69,7 @@ echo "== Python-окружение"
 if [[ -n "$DOMAIN" ]]; then URL="https://$DOMAIN"; else URL="http://$(hostname -I | awk '{print $1}'):$PORT"; fi
 
 echo "== конфиг"
-ARGS=(init --config "$CONF" --db "$DATA/hub.db" --public-url "$URL")
+ARGS=(init --config "$CONF" --db "$DATA/hub.db" --public-url "$URL" --domain "$DOMAIN" --email "$EMAIL" --port "$PORT")
 [[ -n "$DIGEST" ]] && ARGS+=(--digest-hour "$DIGEST")
 for t in "${ADMINS[@]}"; do ARGS+=(--admin-tg "$t"); done
 for a in "${AGENTS[@]}"; do ARGS+=(--agent "$a"); done

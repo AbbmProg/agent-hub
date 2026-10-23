@@ -61,6 +61,9 @@ def cmd_init(a):
     cfg.setdefault("digest_hour", 18)
     if a.public_url:
         cfg["public_url"] = a.public_url
+    for key in ("domain", "email", "port"):  # чтобы повторный setup.sh без параметров ничего не менял
+        if getattr(a, key, None):
+            cfg[key] = getattr(a, key)
     if a.digest_hour is not None:
         cfg["digest_hour"] = None if a.digest_hour in ("", "off") else int(a.digest_hour)
     if a.admin_tg:
@@ -133,6 +136,9 @@ def main():
     p.add_argument("--listener", help="чей бот читает сообщения людей (по умолчанию — первый с токеном)")
     p.add_argument("--tg-proxy", help="прокси к api.telegram.org: socks5://host:port или http://...; '' — убрать")
     p.add_argument("--public-url", help="адрес хаба для агентов (подставляется в ответ бота на /add)")
+    p.add_argument("--domain")
+    p.add_argument("--email")
+    p.add_argument("--port")
     p.add_argument("--digest-hour", help="час ежедневной сводки в чат, UTC (off — выключить)")
     p.add_argument("--admin-tg", action="append", default=[], help="Telegram user id админа (необязательно)")
     p = sub.add_parser("find-chat")
